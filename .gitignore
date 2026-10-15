@@ -1,0 +1,20 @@
+# local settings (may contain the API key)
+config.json
+
+# company data must not end up in git
+*.xlsx
+*.xlsm
+*.jpg
+*.jpeg
+*.png
+*.heic
+*.heif
+backup/
+검교정사진/
+photos/
+
+# python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/

@@ -1,0 +1,7 @@
+[server]
+# no first-run "Email:" question in the console window
+showEmailPrompt = false
+maxUploadSize = 200
+
+[browser]
+gatherUsageStats = false

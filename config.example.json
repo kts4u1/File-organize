@@ -1,0 +1,11 @@
+{
+  "excel_path": "C:\\Users\\me\\OneDrive - Company\\Tool_Verification_2026_Q1.xlsx",
+  "anthropic_api_key": "",
+  "model": "claude-opus-5-5",
+  "effort": "medium",
+  "archive_photos": true,
+  "archive_dir": "",
+  "backup": true,
+  "backup_dir": "",
+  "warn_days": 30
+}
