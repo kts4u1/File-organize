@@ -1,0 +1,281 @@
+<title>툴 검교정 정리</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=Nanum+Pen+Script&display=swap">
+<style>
+  /* Layout: one workbench column — the two inputs on top, then tabs; photo results are stacked review cards. */
+  :root {
+    --bg: #eff1ee;
+    --surface: #ffffff;
+    --surface-2: #f6f7f5;
+    --ink: #1a1d1b;
+    --muted: #5b625c;
+    --line: #d6dbd4;
+    --accent: #f0b400;
+    --accent-ink: #1d1600;
+    --focus: #2563a8;
+    --ok: #1b7548; --ok-bg: #e2f2e8;
+    --review: #9a5a00; --review-bg: #fff0d3;
+    --error: #b0261d; --error-bg: #fce6e3;
+    --skip: #646b65; --skip-bg: #e9ece8;
+    --font-ui: "IBM Plex Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", sans-serif;
+    --font-data: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+    --radius: 10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #111311; --surface: #1a1d1b; --surface-2: #212521; --ink: #e6e9e4; --muted: #a0a79f; --line: #2f3530;
+      --accent: #f0b400; --accent-ink: #1d1600; --focus: #8ab8ef;
+      --ok: #5fca90; --ok-bg: #16301f; --review: #f2b24c; --review-bg: #36280d; --error: #f3897f; --error-bg: #3a1613;
+      --skip: #a0a79f; --skip-bg: #252925;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #111311; --surface: #1a1d1b; --surface-2: #212521; --ink: #e6e9e4; --muted: #a0a79f; --line: #2f3530;
+    --accent: #f0b400; --accent-ink: #1d1600; --focus: #8ab8ef;
+    --ok: #5fca90; --ok-bg: #16301f; --review: #f2b24c; --review-bg: #36280d; --error: #f3897f; --error-bg: #3a1613;
+    --skip: #a0a79f; --skip-bg: #252925;
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg); color: var(--ink); font-family: var(--font-ui); font-size: 15px; line-height: 1.55;
+    padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+    padding-block: 20px 64px;
+  }
+  .wrap { max-width: 1120px; margin: 0 auto; display: grid; gap: 20px; }
+  h1, h2, h3 { text-wrap: balance; margin: 0; line-height: 1.25; }
+  .mono { font-family: var(--font-data); font-variant-numeric: tabular-nums; }
+  .num { text-align: right; }
+  .muted { color: var(--muted); }
+  .small { font-size: 13px; }
+  button, select, input { font: inherit; color: inherit; }
+  button {
+    border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 8px 14px; cursor: pointer;
+  }
+  button:hover:not(:disabled) { border-color: var(--muted); }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; font-weight: 600; }
+  button.primary:hover:not(:disabled) { filter: brightness(1.05); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+  select, input[type=date] {
+    width: 100%; min-width: 0; padding: 7px 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface);
+  }
+  .row-gap { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+
+  /* header */
+  header.top { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: flex-end; justify-content: space-between; }
+  .brand { display: grid; gap: 6px; }
+  .tag {
+    display: inline-flex; align-items: center; gap: 8px; width: max-content; padding: 3px 10px; border: 1.5px solid var(--ink);
+    border-radius: 4px; font-family: var(--font-data); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; background: var(--surface);
+  }
+  .tag i { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+  h1 { font-size: clamp(26px, 4vw, 34px); font-weight: 700; letter-spacing: -0.01em; }
+  .lede { margin: 0; color: var(--muted); max-width: 62ch; }
+  .privacy { font-size: 13px; color: var(--muted); max-width: 34ch; }
+
+  /* inputs */
+  .inputs { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }
+  .drop {
+    position: relative; display: grid; gap: 6px; padding: 18px; border: 1.5px dashed var(--line); border-radius: var(--radius);
+    background: var(--surface); min-width: 0; transition: border-color .15s, background .15s;
+  }
+  .drop.over { border-color: var(--accent); background: var(--surface-2); }
+  .drop.disabled { opacity: .6; }
+  .drop .step { font-family: var(--font-data); font-size: 12px; color: var(--muted); letter-spacing: .06em; }
+  .drop h2 { font-size: 17px; }
+  .drop input[type=file] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+  .drop .pick { justify-self: start; pointer-events: none; }
+  #excel-summary { min-width: 0; overflow-wrap: anywhere; }
+  .engine { font-size: 12px; color: var(--ok); min-height: 1.4em; }
+  .engine.bad { color: var(--review); }
+  .chip { display: inline-block; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface-2); font-size: 13px; }
+  .chip.demo { margin-left: 6px; border-color: var(--review); color: var(--review); background: var(--review-bg); }
+  .demo-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+
+  /* tabs */
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); overflow-x: auto; }
+  [role=tab] {
+    border: 0; border-bottom: 3px solid transparent; border-radius: 0; background: none; padding: 10px 14px; color: var(--muted); white-space: nowrap;
+  }
+  [role=tab][aria-selected=true] { color: var(--ink); border-bottom-color: var(--accent); font-weight: 600; }
+  [role=tabpanel] { display: grid; gap: 14px; padding-top: 4px; }
+
+  /* status pills */
+  .pill { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 13px; font-weight: 600; white-space: nowrap; }
+  .pill.ok { color: var(--ok); background: var(--ok-bg); }
+  .pill.review { color: var(--review); background: var(--review-bg); }
+  .pill.error { color: var(--error); background: var(--error-bg); }
+  .pill.skip, .pill.pending { color: var(--skip); background: var(--skip-bg); }
+  #job-counts { display: flex; flex-wrap: wrap; gap: 6px; }
+  #progress { font-size: 14px; color: var(--muted); }
+
+  /* job cards */
+  .jobs { display: grid; gap: 12px; }
+  .job { background: var(--surface); border: 1px solid var(--line); border-left: 4px solid var(--skip); border-radius: var(--radius); padding: 14px; display: grid; gap: 12px; min-width: 0; }
+  .job.ok { border-left-color: var(--ok); }
+  .job.review { border-left-color: var(--review); }
+  .job.error { border-left-color: var(--error); }
+  .job-head { display: flex; justify-content: space-between; gap: 10px; align-items: center; }
+  .job-file { font-weight: 600; overflow-wrap: anywhere; }
+  .job-wait { display: flex; gap: 10px; align-items: center; color: var(--muted); }
+  .spinner { width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--line); border-top-color: var(--accent); animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
+  .job-body { display: grid; grid-template-columns: minmax(0, 240px) minmax(0, 1fr) minmax(0, 1.25fr); gap: 16px; align-items: start; }
+  .thumb { margin: 0; display: grid; gap: 4px; }
+  .thumb img { width: 100%; border-radius: 6px; border: 1px solid var(--line); background: var(--surface-2); }
+  .thumb figcaption { font-size: 12px; color: var(--muted); }
+  .noimg { aspect-ratio: 3 / 2; display: grid; place-items: center; border: 1px dashed var(--line); border-radius: 6px; color: var(--muted); }
+  .readout { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 12px; margin: 0; font-size: 14px; }
+  .readout dt { color: var(--muted); }
+  .readout dd { margin: 0; overflow-wrap: anywhere; }
+  .controls { display: grid; gap: 10px; min-width: 0; }
+  .field { display: grid; gap: 4px; font-size: 13px; color: var(--muted); min-width: 0; }
+  .field > select, .field > input { color: var(--ink); font-size: 14px; }
+  .dates { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .include { display: flex; gap: 8px; align-items: center; font-weight: 600; }
+  .include input { width: 18px; height: 18px; accent-color: var(--ok); }
+  .notes { margin: 0; padding-left: 18px; display: grid; gap: 2px; font-size: 14px; }
+  .empty { padding: 28px; text-align: center; color: var(--muted); border: 1px dashed var(--line); border-radius: var(--radius); }
+  .actions {
+    position: sticky; bottom: 0; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between;
+    padding: 12px 14px calc(12px + env(safe-area-inset-bottom, 0px)); background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+  }
+
+  /* result */
+  #result { background: var(--surface); border: 1px solid var(--line); border-left: 4px solid var(--ok); border-radius: var(--radius); padding: 16px; display: grid; gap: 10px; }
+  .result-head { display: flex; flex-wrap: wrap; gap: 10px; justify-content: space-between; align-items: center; }
+  .result-head h3 { font-size: 17px; }
+
+  /* tables */
+  .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { padding: 8px 10px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
+  th { font-size: 12px; color: var(--muted); font-weight: 600; letter-spacing: .03em; background: var(--surface-2); position: sticky; top: 0; }
+  tr:last-child td { border-bottom: 0; }
+  tr.due-error td { background: var(--error-bg); }
+  tr.due-review td { background: var(--review-bg); }
+
+  /* due-date overview */
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chips .chip { cursor: pointer; padding: 5px 12px; }
+  .chips .chip.on { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; }
+  .stat { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 14px; display: grid; }
+  .stat-n { font-family: var(--font-data); font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .stat-t { font-size: 13px; color: var(--muted); }
+  .stat.error .stat-n { color: var(--error); }
+  .stat.review .stat-n { color: var(--review); }
+  .stat.ok .stat-n { color: var(--ok); }
+  .warn-row { display: flex; gap: 8px; align-items: center; font-size: 14px; color: var(--muted); }
+  .warn-row input { width: 76px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+
+  /* stickers */
+  .st-top { display: grid; grid-template-columns: minmax(0, 320px) minmax(0, 1fr); gap: 18px; align-items: start; }
+  .st-top p { margin: 0 0 8px; max-width: 60ch; }
+  .st-preview img { width: 100%; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
+  .st-group { border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); padding: 8px 14px 12px; margin: 0; display: grid; gap: 4px; min-width: 0; }
+  .st-group legend { font-weight: 600; padding: 0 6px; }
+  .st-item { display: grid; grid-template-columns: auto minmax(5em, auto) auto minmax(0, 1fr); gap: 4px 12px; align-items: center; font-size: 14px; }
+  .st-item .small { overflow-wrap: anywhere; }
+
+  /* toasts */
+  #toasts { position: fixed; right: max(16px, env(safe-area-inset-right, 0px)); bottom: calc(16px + env(safe-area-inset-bottom, 0px)); display: grid; gap: 8px; z-index: 10; max-width: min(420px, calc(100vw - 32px)); }
+  .toast { padding: 10px 14px; border-radius: 8px; background: var(--ink); color: var(--bg); font-size: 14px; box-shadow: 0 6px 20px rgba(0,0,0,.18); }
+  .toast.bad { background: var(--error); color: #fff; }
+  .toast.good { background: var(--ok); color: #fff; }
+
+  @media (max-width: 820px) {
+    .job-body { grid-template-columns: minmax(0, 1fr); }
+    .thumb { max-width: 360px; }
+    .st-top { grid-template-columns: minmax(0, 1fr); }
+    .st-item { grid-template-columns: auto minmax(0, 1fr) auto; }
+    .st-item .small { grid-column: 2 / -1; }
+  }
+  @media (max-width: 480px) {
+    .dates { grid-template-columns: 1fr; }
+    .actions > span { display: none; }
+  }
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <div class="brand">
+      <span class="tag"><i aria-hidden="true"></i>Cal Last · Cal Next</span>
+      <h1>툴 검교정 정리</h1>
+      <p class="lede">검교정 후 찍은 툴 사진에서 시리얼과 교정필증 날짜를 읽어, Tool Verification 엑셀의 해당 엔지니어 행에 날짜를 고치고 교정필증 사진을 넣습니다.</p>
+    </div>
+    <p class="privacy">파일과 사진은 이 브라우저 안에서만 처리합니다. API 키나 서버가 필요 없습니다.</p>
+  </header>
+
+  <section class="inputs" aria-label="파일 선택">
+    <div class="drop" id="excel-drop">
+      <span class="step">STEP 1</span>
+      <h2>Tool Verification 엑셀</h2>
+      <div id="excel-summary"></div>
+      <span class="pick"><button type="button" tabindex="-1">엑셀 파일 선택</button></span>
+      <input type="file" id="excel-input" accept=".xlsx" aria-label="엑셀 파일 선택">
+    </div>
+    <div class="drop" id="photo-drop">
+      <span class="step">STEP 2</span>
+      <h2>검교정 사진 · SMAX 캡쳐</h2>
+      <div class="muted small">이름·시리얼 메모(또는 QR 스티커)와 교정필증이 한 장에 나오게 찍은 사진. 여러 장 한꺼번에 올려도 됩니다.</div>
+      <div class="engine" id="engine-status" aria-live="polite"></div>
+      <span class="pick"><button type="button" tabindex="-1">사진 선택</button></span>
+      <input type="file" id="photo-input" accept="image/*,.heic,.heif" multiple aria-label="사진 선택">
+    </div>
+  </section>
+
+  <div class="demo-row">
+    <button type="button" id="demo">예시로 해보기</button>
+    <span class="muted small">가상의 엑셀과 예시 사진 2장(QR 스티커, 손글씨 메모)으로 전체 과정을 보여줍니다.</span>
+  </div>
+
+  <nav class="tabs" role="tablist" aria-label="화면">
+    <button type="button" role="tab" id="tab-update" data-tab="update" aria-controls="panel-update">사진 반영</button>
+    <button type="button" role="tab" id="tab-status" data-tab="status" aria-controls="panel-status">Due date 현황</button>
+    <button type="button" role="tab" id="tab-stickers" data-tab="stickers" aria-controls="panel-stickers">QR 스티커</button>
+  </nav>
+
+  <section role="tabpanel" id="panel-update" aria-labelledby="tab-update">
+    <div class="row-gap"><div id="job-counts"></div><div id="progress" hidden></div></div>
+    <div id="result" hidden></div>
+    <div class="empty" id="jobs-empty">STEP 1에서 엑셀을, STEP 2에서 사진을 고르면 사진마다 찾은 툴과 날짜가 여기에 나옵니다. 확인한 뒤 엑셀 파일을 만듭니다.</div>
+    <div class="jobs" id="jobs"></div>
+    <div class="actions" id="actions" hidden>
+      <span class="muted small">'자동 반영'은 바로 들어가고, '확인 필요'는 내용을 보고 체크하면 들어갑니다.</span>
+      <div class="row-gap">
+        <button type="button" id="clear">사진 모두 지우기</button>
+        <button type="button" class="primary" id="apply" disabled>엑셀 파일 만들기 (0건)</button>
+      </div>
+    </div>
+  </section>
+
+  <section role="tabpanel" id="panel-status" aria-labelledby="tab-status" hidden>
+    <label class="warn-row">임박 기준 <input type="number" id="warn-days" min="1" max="365" value="30"> 일 이내</label>
+    <div id="status-body" style="display:grid;gap:14px"></div>
+  </section>
+
+  <section role="tabpanel" id="panel-stickers" aria-labelledby="tab-stickers" hidden>
+    <div id="sticker-body" style="display:grid;gap:14px"></div>
+  </section>
+</div>
+<div id="toasts" aria-live="polite"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@6.0.1/dist/tesseract.min.js"></script>
+<script src="js/xlsx.js"></script>
+<script src="js/match.js"></script>
+<script src="js/vision.js"></script>
+<script src="js/stickers.js"></script>
+<script src="js/demo-data.js"></script>
+<script src="js/demo.js"></script>
+<script src="js/app.js"></script>
