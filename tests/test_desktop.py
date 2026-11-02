@@ -172,3 +172,31 @@ def test_sharepoint_through_a_real_browser(browser_env, tmp_path):
         session.quit()
         mock.stop()
         shutil.rmtree(tmp_path / "profile", ignore_errors=True)
+
+
+def test_slow_transfers_outlast_the_webdriver_command_limit(browser_env, tmp_path, monkeypatch):
+    """2026-11-02 on the user's PC: a download longer than the 30 s command limit failed (ReadTimeoutError)."""
+    from desktop import sharepoint as spmod
+
+    monkeypatch.setattr(spmod, "COMMAND_TIMEOUT", 5)
+    path = build_workbook(tmp_path / "slow.xlsx", with_pictures=True)
+    with open(path, "rb") as fh:
+        original = fh.read()
+    mock = MockSharePoint(original).start()
+    mock.download_seconds = 12
+    mock.upload_seconds = 8
+    messages = []
+    session = spmod.BrowserSession(tmp_path / "profile", report=messages.append, browser="chrome", binary=CHROMIUM, headless=True)
+    try:
+        session.open_tool("data:text/html,<p>tool</p>")
+        sp = spmod.SharePoint(session, SharePointFile.parse(mock.page_url), report=messages.append, login_timeout=20)
+        data, _ = sp.download()
+        assert data == original
+        assert any("MB" in m for m in messages)  # progress was shown while receiving
+        mock.download_seconds = 0
+        result = sp.upload(data)
+        assert result["ok"] and mock.uploads[-1] == data
+    finally:
+        session.quit()
+        mock.stop()
+        shutil.rmtree(tmp_path / "profile", ignore_errors=True)

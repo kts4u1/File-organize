@@ -27,7 +27,14 @@ Cal Last / Cal Next와 Label Photo / SMAX Tool Photo를 고치는 도구입니�
 - `python -m pytest` (Python 쪽 + desktop 서버 + 실제 Chromium으로 SharePoint 흉내 서버 받기/올리기: `tests/mock_sharepoint.py`).
 - 브라우저 도구는 Playwright로 확인(스크래치 스크립트). Office Script는 문서 기준 타입 검사 + 모의 실행만, 실제 Excel 웹 실행은 사용자 확인 필요.
 
+## 이미 해결한 문제 (되돌리지 말 것)
+- 2026-11-02 첫 실행: SharePoint 로그인·파일 정보는 성공, 받기에서 `ReadTimeoutError … localhost:<드라이버 포트> (read timeout=30)`.
+  원인: WebDriver 명령 대기 30초보다 페이지 안 다운로드가 오래 걸림(FSN의 `set_timeout(20)`은 신버전 selenium에서 실제로 적용되지 않아 안 겪었음).
+  수정: 받기/올리기를 페이지에서 백그라운드로 시작하고 1초마다 상태만 확인(`DOWNLOAD_START_JS`/`UPLOAD_START_JS` + `_poll`), 진행 MB 표시,
+  3분간 진행 없으면 중단, 명령 대기 120초. 테스트 `test_slow_transfers_outlast_the_webdriver_command_limit`(이전 코드는 같은 오류로 실패).
+- 실제 SharePoint 파일 이름은 `Tool list for Field validation 20250325.xlsx` (처음 받은 사본과 다를 수 있음 → 시트/헤더 확인 필요).
+
 ## 열린 항목 (2026-11-02)
-- 사용자 PC에서 `툴검교정.exe` 첫 실행: SharePoint 받기 → TEST 탭 반영 → 올리기 결과(성공/423 잠김/권한) 확인.
+- 사용자 PC에서 `툴검교정.exe` 다시 빌드·실행: SharePoint 받기(진행 MB 표시) → TEST 탭 반영 → 올리기 결과(성공/423 잠김/권한) 확인.
 - Office Script 첫 실제 실행 결과 확인.
 - 손글씨 시리얼 인식률은 휴대폰 원본 해상도 사진으로 다시 확인. 확실하게 하려면 QR 스티커 사용 권장.

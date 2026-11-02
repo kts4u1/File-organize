@@ -29,6 +29,9 @@ from typing import Callable
 from urllib.parse import parse_qs, unquote, urlparse
 
 CHUNK = 3 * 1024 * 1024  # bytes per WebDriver call when moving file contents
+COMMAND_TIMEOUT = 120  # max wait for one WebDriver command; long transfers are polled instead
+TRANSFER_DEADLINE = 20 * 60  # give up a download/upload after this many seconds
+STALL_LIMIT = 180  # …or when a download receives nothing for this long
 LOGIN_HOSTS = ("login.microsoftonline", "login.live", "/adfs/", "login.windows", "sso.")
 
 
@@ -81,15 +84,40 @@ fetch(`${site}/_api/web/GetFileById('${guid}')?$select=Name,ServerRelativeUrl,ET
   .catch(e => done({ok: false, status: 0, error: String(e)}));
 """
 
-DOWNLOAD_JS = r"""
-const url = arguments[0]; const done = arguments[arguments.length - 1];
-fetch(url, {credentials: 'include', redirect: 'follow', cache: 'no-store'}).then(async r => {
-  const buf = new Uint8Array(await r.arrayBuffer());
-  window.__tcDl = buf;
-  done({ok: r.ok, status: r.status, size: buf.length, cd: r.headers.get('content-disposition') || '',
-        pk: buf.length > 1 && buf[0] === 0x50 && buf[1] === 0x4b});
-}).catch(e => done({ok: false, status: 0, error: String(e)}));
+# Transfers run in the page in the background; Python polls their state with
+# short calls, so no single WebDriver command has to outlast a big file
+# (2026-11-02: a 30 s command limit cut off the first real download).
+DOWNLOAD_START_JS = r"""
+const url = arguments[0];
+window.__tcDl = null;
+const st = window.__tcDlState = {done: false, received: 0, total: 0, status: 0};
+(async () => {
+  try {
+    const r = await fetch(url, {credentials: 'include', redirect: 'follow', cache: 'no-store'});
+    st.status = r.status; st.ok = r.ok; st.cd = r.headers.get('content-disposition') || '';
+    st.type = r.headers.get('content-type') || ''; st.total = Number(r.headers.get('content-length') || 0);
+    const chunks = [];
+    if (r.body && r.body.getReader) {
+      const reader = r.body.getReader();
+      for (;;) {
+        const {done, value} = await reader.read();
+        if (done) break;
+        chunks.push(value); st.received += value.length;
+      }
+    } else {
+      const b = new Uint8Array(await r.arrayBuffer()); chunks.push(b); st.received = b.length;
+    }
+    const buf = new Uint8Array(st.received); let o = 0;
+    for (const c of chunks) { buf.set(c, o); o += c.length; }
+    window.__tcDl = buf; st.size = buf.length;
+    st.pk = buf.length > 1 && buf[0] === 0x50 && buf[1] === 0x4b;
+  } catch (e) { st.error = String(e); }
+  st.done = true;
+})();
+return true;
 """
+
+STATE_JS = "return window[arguments[0]] || null;"
 
 CHUNK_GET_JS = r"""
 const buf = window.__tcDl; if (!buf) return null;
@@ -106,26 +134,35 @@ window.__tcUp.push(arguments[0]);
 return window.__tcUp.length;
 """
 
-UPLOAD_JS = r"""
-const [site, guid, etag] = arguments; const done = arguments[arguments.length - 1];
+UPLOAD_START_JS = r"""
+const [site, guid, etag] = arguments;
+const st = window.__tcUpState = {done: false, status: 0, step: 'contextinfo'};
 (async () => {
-  const ctx = await fetch(`${site}/_api/contextinfo`, {method: 'POST', credentials: 'include',
-                          headers: {Accept: 'application/json;odata=nometadata'}});
-  if (!ctx.ok) return done({ok: false, step: 'contextinfo', status: ctx.status, text: (await ctx.text()).slice(0, 400)});
-  const j = await ctx.json();
-  const digest = j.FormDigestValue || (j.d && j.d.GetContextWebInformation && j.d.GetContextWebInformation.FormDigestValue);
-  const parts = (window.__tcUp || []).map(b64 => {
-    const bin = atob(b64); const u = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
-    return u;
-  });
-  window.__tcUp = null;
-  const headers = {'X-RequestDigest': digest, 'X-HTTP-Method': 'PUT'};
-  if (etag) headers['If-Match'] = etag;
-  const r = await fetch(`${site}/_api/web/GetFileById('${guid}')/$value`,
-                        {method: 'POST', credentials: 'include', headers, body: new Blob(parts)});
-  done({ok: r.ok, status: r.status, step: 'upload', text: r.ok ? '' : (await r.text()).slice(0, 600)});
-})().catch(e => done({ok: false, status: 0, step: 'upload', error: String(e)}));
+  try {
+    const ctx = await fetch(`${site}/_api/contextinfo`, {method: 'POST', credentials: 'include',
+                            headers: {Accept: 'application/json;odata=nometadata'}});
+    if (!ctx.ok) {
+      Object.assign(st, {ok: false, status: ctx.status, text: (await ctx.text()).slice(0, 400)});
+    } else {
+      const j = await ctx.json();
+      const digest = j.FormDigestValue || (j.d && j.d.GetContextWebInformation && j.d.GetContextWebInformation.FormDigestValue);
+      const parts = (window.__tcUp || []).map(b64 => {
+        const bin = atob(b64); const u = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+        return u;
+      });
+      window.__tcUp = null;
+      const headers = {'X-RequestDigest': digest, 'X-HTTP-Method': 'PUT'};
+      if (etag) headers['If-Match'] = etag;
+      st.step = 'upload';
+      const r = await fetch(`${site}/_api/web/GetFileById('${guid}')/$value`,
+                            {method: 'POST', credentials: 'include', headers, body: new Blob(parts)});
+      Object.assign(st, {ok: r.ok, status: r.status, text: r.ok ? '' : (await r.text()).slice(0, 600)});
+    }
+  } catch (e) { Object.assign(st, {ok: false, status: 0, error: String(e)}); }
+  st.done = true;
+})();
+return true;
 """
 
 
@@ -221,10 +258,10 @@ class BrowserSession:
             self.driver = factory(options=options(alt), service=service())
         self.driver.set_page_load_timeout(45)
         try:
-            self.driver.command_executor._client_config.timeout = 30  # selenium 4.2x+
+            self.driver.command_executor._client_config.timeout = COMMAND_TIMEOUT  # selenium 4.2x+
         except Exception:
             try:
-                self.driver.command_executor.set_timeout(30)
+                self.driver.command_executor.set_timeout(COMMAND_TIMEOUT)
             except Exception:
                 pass
 
@@ -342,6 +379,61 @@ class SharePoint:
     def _done(self):
         self.session.show_tool()
 
+    def _poll(self, key: str, what: str, progress: bool) -> dict:
+        """Wait for a background transfer in the page, reporting progress."""
+        start = last_change = last_report = time.time()
+        last = -1
+        while True:
+            state = self.driver.execute_script(STATE_JS, key) or {}
+            if state.get("done"):
+                return state
+            now = time.time()
+            received = int(state.get("received") or 0)
+            if received != last:
+                last, last_change = received, now
+            if now - last_report >= 3:
+                last_report = now
+                if progress and received:
+                    total = int(state.get("total") or 0)
+                    size = f"{received / 1e6:.1f} / {total / 1e6:.1f} MB" if total else f"{received / 1e6:.1f} MB"
+                    self.report(f"{what}… {size}")
+                elif now - start >= 10:
+                    self.report(f"{what}… ({int(now - start)}초)")
+            if progress and now - last_change > STALL_LIMIT:
+                raise SharePointError(f"{what}이(가) {STALL_LIMIT // 60}분 동안 진행되지 않아 멈췄습니다. 네트워크를 확인하고 다시 시도하세요.",
+                                      code="stalled")
+            if now - start > TRANSFER_DEADLINE:
+                raise SharePointError(f"{what} 시간이 너무 오래 걸려 멈췄습니다 ({TRANSFER_DEADLINE // 60}분).", code="timeout")
+            time.sleep(1)
+
+    def _fetch_file(self, what: str) -> bytes:
+        """Download the file inside the logged-in page and move it to Python in chunks."""
+        self.driver.execute_script(DOWNLOAD_START_JS, self.file.download_url)
+        state = self._poll("__tcDlState", what, progress=True)
+        if not state.get("ok") or not state.get("pk"):
+            status = state.get("status")
+            self.log(f"{what} 실패: { {k: v for k, v in state.items() if k != 'cd'} }")
+            if status == 200:  # an HTML page instead of the workbook: usually the login expired
+                raise SharePointError("엑셀 대신 다른 페이지가 받아졌습니다. Edge 창에서 SharePoint 로그인 상태를 확인하고 다시 시도하세요.",
+                                      status, "denied")
+            code, msg = explain(status, "받기")
+            raise SharePointError(msg, status, code)
+        size = int(state["size"])
+        parts = []
+        for start in range(0, size, CHUNK):
+            b64 = self.driver.execute_script(CHUNK_GET_JS, start, CHUNK)
+            parts.append(base64.b64decode(b64 or ""))
+        data = b"".join(parts)
+        if len(data) != size or not data.startswith(b"PK"):
+            raise SharePointError("파일 내용을 끝까지 받지 못했습니다. 다시 시도하세요.")
+        return data
+
+    def _send_file(self, data: bytes, etag: str) -> dict:
+        for i, start in enumerate(range(0, len(data), CHUNK)):
+            self.driver.execute_script(PUSH_JS, base64.b64encode(data[start:start + CHUNK]).decode("ascii"), i == 0)
+        self.driver.execute_script(UPLOAD_START_JS, self.file.site, self.file.guid, etag)
+        return self._poll("__tcUpState", "SharePoint에 올리는 중", progress=False)
+
     # ---------------------------------------------------------- operations
     def download(self) -> tuple[bytes, dict]:
         with self.session.lock:
@@ -349,23 +441,11 @@ class SharePoint:
                 self._open_page()
                 info = self._file_info()
                 self.report(f"SharePoint에서 받는 중… {info.get('Name', '')}")
-                meta = self._async(DOWNLOAD_JS, self.file.download_url)
-                if not isinstance(meta, dict) or not meta.get("ok") or not meta.get("pk"):
-                    status = meta.get("status") if isinstance(meta, dict) else None
-                    self.log(f"받기 실패: {meta}")
-                    code, msg = explain(status, "받기")
-                    raise SharePointError(msg if status not in (200, None) else "받은 내용이 엑셀 파일이 아닙니다.", status, code)
-                size = int(meta["size"])
-                parts = []
-                for start in range(0, size, CHUNK):
-                    b64 = self.driver.execute_script(CHUNK_GET_JS, start, CHUNK)
-                    parts.append(base64.b64decode(b64 or ""))
-                data = b"".join(parts)
-                if len(data) != size or not data.startswith(b"PK"):
-                    raise SharePointError("파일 내용을 끝까지 받지 못했습니다. 다시 시도하세요.")
+                t0 = time.time()
+                data = self._fetch_file("SharePoint에서 받는 중")
                 self.etag = info.get("ETag")
                 self.info = info
-                self.log(f"받기 성공 {size:,} bytes, ETag {self.etag}")
+                self.log(f"받기 성공 {len(data):,} bytes ({time.time() - t0:.0f}초), ETag {self.etag}")
                 return data, info
             finally:
                 self._done()
@@ -385,31 +465,29 @@ class SharePoint:
                     code, msg = explain(412)
                     raise SharePointError(msg, 412, code)
                 self.report(f"SharePoint에 올리는 중… {current.get('Name', '')} ({len(data) / 1e6:.1f} MB)")
-                for i, start in enumerate(range(0, len(data), CHUNK)):
-                    self.driver.execute_script(PUSH_JS, base64.b64encode(data[start:start + CHUNK]).decode("ascii"), i == 0)
-                res = self._async(UPLOAD_JS, self.file.site, self.file.guid, self.etag)
-                if isinstance(res, dict) and res.get("status") == 412:
+                t0 = time.time()
+                res = self._send_file(data, self.etag)
+                if res.get("status") == 412:
                     # some servers reject the file ETag in If-Match: re-check, then send without it
                     again = self._file_info()
                     if again.get("ETag") == self.etag:
                         self.log("If-Match 거부 → ETag 재확인 후 다시 올림")
-                        for i, start in enumerate(range(0, len(data), CHUNK)):
-                            self.driver.execute_script(PUSH_JS, base64.b64encode(data[start:start + CHUNK]).decode("ascii"), i == 0)
-                        res = self._async(UPLOAD_JS, self.file.site, self.file.guid, "")
+                        res = self._send_file(data, "")
                 if not isinstance(res, dict) or not res.get("ok"):
                     status = res.get("status") if isinstance(res, dict) else None
                     self.log(f"올리기 실패: {res}")
                     code, msg = explain(status, res.get("step", "") if isinstance(res, dict) else "")
                     raise SharePointError(msg, status, code)
+                self.log(f"올리기 완료 ({time.time() - t0:.0f}초)")
                 after = self._file_info()
                 self.etag = after.get("ETag")
                 self.info = after
-                # read it back to confirm what SharePoint now holds
-                meta = self._async(DOWNLOAD_JS, self.file.download_url)
+                # read it back to confirm what SharePoint now holds (the upload already succeeded)
                 stored = b""
-                if isinstance(meta, dict) and meta.get("pk"):
-                    stored = b"".join(base64.b64decode(self.driver.execute_script(CHUNK_GET_JS, s, CHUNK) or "")
-                                      for s in range(0, int(meta["size"]), CHUNK))
+                try:
+                    stored = self._fetch_file("올린 파일 확인 중")
+                except SharePointError as exc:
+                    self.log(f"올린 뒤 확인용 받기 실패(올리기는 성공): {exc}")
                 sheets = sheet_names(stored) if stored.startswith(b"PK") else []
                 self.log(f"올리기 성공: ETag {self.etag}, 시트 {sheets}")
                 return {"ok": True, "name": after.get("Name", ""), "etag": self.etag, "modified": after.get("TimeLastModified", ""),

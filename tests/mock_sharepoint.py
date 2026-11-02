@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -24,6 +25,8 @@ class MockSharePoint:
         self.name = name
         self.version = 7
         self.locked = False
+        self.download_seconds = 0.0  # >0: send the file slowly, like a slow network
+        self.upload_seconds = 0.0  # >0: answer the upload late
         self.uploads: list[bytes] = []
         self.requests: list[str] = []
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
@@ -86,8 +89,22 @@ class MockSharePoint:
                 if u.path == f"{SITE}/_layouts/15/download.aspx":
                     if parse_qs(u.query).get("UniqueId", [""])[0].lower() != GUID:
                         return self._send(404, b"not found")
-                    return self._send(200, sp.data, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                      {"Content-Disposition": f"attachment; filename*=UTF-8''{sp.name}"})
+                    headers = {"Content-Disposition": f"attachment; filename*=UTF-8''{sp.name}"}
+                    if not sp.download_seconds:
+                        return self._send(200, sp.data, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers)
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                    self.send_header("Content-Length", str(len(sp.data)))
+                    for k, v in headers.items():
+                        self.send_header(k, v)
+                    self.end_headers()
+                    pieces = 24
+                    step = -(-len(sp.data) // pieces)
+                    for i in range(0, len(sp.data), step):
+                        self.wfile.write(sp.data[i:i + step])
+                        self.wfile.flush()
+                        time.sleep(sp.download_seconds / pieces)
+                    return
                 if u.path == f"{SITE}/_api/web/GetFileById('{GUID}')":
                     body = {"Name": sp.name, "ServerRelativeUrl": f"{SITE}/Shared Documents/{sp.name}",
                             "ETag": sp.etag, "TimeLastModified": "2026-11-02T01:23:45Z", "Length": str(len(sp.data))}
@@ -113,6 +130,7 @@ class MockSharePoint:
                     match = self.headers.get("If-Match")
                     if match and match != sp.etag:
                         return self._send(412, b'{"error":{"message":"The version of the file has changed."}}', "application/json")
+                    time.sleep(sp.upload_seconds)
                     sp.uploads.append(body)
                     sp.data = body
                     sp.version += 1
