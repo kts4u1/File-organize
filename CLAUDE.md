@@ -38,8 +38,12 @@ Cal Last / Cal Next와 Label Photo / SMAX Tool Photo를 고치는 도구입니�
   `SPFileLockException … locked for shared use by taesu.kim@philips.com` — 다른 사람이 Excel에서 열어 둠. 팀 공용 파일이라 흔한 상황.
   → 423이면 잠근 사람을 표시하고 결과 칸에 'Excel 웹 스크립트로 반영' 버튼(같은 변경으로 Office Script 생성) + 'Excel 웹에서 파일 열기' 링크.
   파일째 교체는 아무도 안 열었을 때만 가능. 실제 파일이 약 208 MB라 받기·올리기가 각각 1분 이상 걸림.
+- 같은 날 사용자 확인: taesu.kim = 사용자 본인. 원인은 프로그램 자신 — 로그인하려고 파일 링크(Doc.aspx?action=edit)를 열어
+  Excel 웹이 편집 모드로 파일을 잠갔음. 수정: SharePoint 창은 '사이트 콘텐츠'(`/_layouts/15/viewlsts.aspx`, `landing_url`)로 로그인하고
+  파일(Doc.aspx)은 절대 열지 않음, 창이 파일 화면에 있으면 먼저 벗어남. 테스트 `test_program_never_opens_the_workbook_itself`
+  (흉내 서버는 Doc.aspx를 열면 잠김; 이전 코드는 실패).
 
 ## 열린 항목 (2026-11-02)
-- Office Script(Excel 웹 자동화 탭) 실제 실행 결과 확인 — 잠긴 파일에 반영하는 주 경로가 됨. 자동화 탭이 없으면 다른 방법 필요(아무도 안 열었을 때 교체 등).
+- 새 빌드로 다시 올리기 확인(본인 잠금이 없어진 뒤). 다른 사람이 실제로 열어 둔 경우엔 Office Script(Excel 웹 자동화 탭) 경로 — 실제 실행 결과 미확인.
 - Office Script 첫 실제 실행 결과 확인.
 - 손글씨 시리얼 인식률은 휴대폰 원본 해상도 사진으로 다시 확인. 확실하게 하려면 QR 스티커 사용 권장.

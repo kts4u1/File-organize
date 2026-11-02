@@ -73,6 +73,17 @@ class SharePointFile:
     def download_url(self) -> str:
         return f"{self.site}/_layouts/15/download.aspx?UniqueId={self.guid}"
 
+    @property
+    def landing_url(self) -> str:
+        """A page of the site that does not open the workbook ("사이트 콘텐츠").
+
+        The file link itself (Doc.aspx?action=edit) opens Excel for the web in
+        edit mode, which locks the file in the user's name, so the program's
+        own upload was refused with 423 (2026-11-02, "locked for shared use by"
+        the user).
+        """
+        return f"{self.site}/_layouts/15/viewlsts.aspx"
+
 
 # ---------------------------------------------------------------- page scripts
 INFO_JS = r"""
@@ -349,13 +360,18 @@ class SharePoint:
     def _on_site(self) -> bool:
         return urlparse(self.session.current_url()).netloc.lower() == urlparse(self.file.origin).netloc.lower()
 
+    def _on_workbook(self) -> bool:
+        """Is the SharePoint window showing the workbook in Excel (which holds a lock)?"""
+        path = urlparse(self.session.current_url()).path.lower()
+        return path.endswith("/doc.aspx") or path.endswith("/doc2.aspx") or "/_layouts/15/xl" in path
+
     def _open_page(self):
         """Be on a SharePoint page of the file's host, logged in (SSO, or the user logs in)."""
         self.session.sharepoint_window()
-        if self._on_site():
+        if self._on_site() and not self._on_workbook():
             return
         self.report("SharePoint 여는 중… (로그인 창이 나오면 회사 계정으로 로그인해 주세요)")
-        self.session._get(self.file.url)
+        self.session._get(self.file.landing_url)
         end = time.time() + self.login_timeout
         warned = False
         while time.time() < end:

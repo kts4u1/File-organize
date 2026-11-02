@@ -208,3 +208,34 @@ def test_slow_transfers_outlast_the_webdriver_command_limit(browser_env, tmp_pat
         session.quit()
         mock.stop()
         shutil.rmtree(tmp_path / "profile", ignore_errors=True)
+
+
+def test_program_never_opens_the_workbook_itself(browser_env, tmp_path):
+    """2026-11-02: the program opened the file link (Excel web, edit mode) to log in, which locked the
+    file in the user's own name, and its upload was refused with 423."""
+    from desktop.sharepoint import BrowserSession, SharePoint
+
+    path = build_workbook(tmp_path / "own.xlsx", with_pictures=False)
+    with open(path, "rb") as fh:
+        original = fh.read()
+    mock = MockSharePoint(original).start()  # opening Doc.aspx locks the file, like Excel for the web
+    session = BrowserSession(tmp_path / "profile", report=lambda m: None, browser="chrome", binary=CHROMIUM, headless=True)
+    try:
+        session.open_tool("data:text/html,<p>tool</p>")
+        sp = SharePoint(session, SharePointFile.parse(mock.page_url), report=lambda m: None, login_timeout=20)
+        data, _ = sp.download()
+        assert not mock.locked
+        assert not any("Doc.aspx" in r for r in mock.requests)
+        assert sp.upload(data)["ok"]
+
+        # a SharePoint window left on the workbook (older version) is moved off it before uploading
+        session.driver.switch_to.window(session.sp_window)
+        session.driver.get(mock.page_url)
+        mock.locked = False  # the lock is released once that page is left
+        session.show_tool()
+        sp.download()
+        assert sp.upload(data)["ok"]
+    finally:
+        session.quit()
+        mock.stop()
+        shutil.rmtree(tmp_path / "profile", ignore_errors=True)

@@ -25,6 +25,7 @@ class MockSharePoint:
         self.name = name
         self.version = 7
         self.locked = False
+        self.lock_owner = "taesu.kim@philips.com"
         self.download_seconds = 0.0  # >0: send the file slowly, like a slow network
         self.upload_seconds = 0.0  # >0: answer the upload late
         self.uploads: list[bytes] = []
@@ -82,7 +83,13 @@ class MockSharePoint:
                 u = urlparse(self.path)
                 sp.requests.append(f"GET {u.path}")
                 if u.path.endswith("/_layouts/15/Doc.aspx"):
+                    # Excel for the web opens the workbook for editing: SharePoint locks it for this user
+                    sp.locked = True
+                    sp.lock_owner = "taesu.kim@philips.com"
                     return self._send(200, b"<html><body>Excel Online (mock)</body></html>", "text/html",
+                                      {"Set-Cookie": "FedAuth=ok; Path=/; HttpOnly"})
+                if u.path == f"{SITE}/_layouts/15/viewlsts.aspx":
+                    return self._send(200, b"<html><body>Site contents (mock)</body></html>", "text/html",
                                       {"Set-Cookie": "FedAuth=ok; Path=/; HttpOnly"})
                 if not self._logged_in():
                     return self._send(403, b"Access denied")
@@ -129,7 +136,7 @@ class MockSharePoint:
                         msg = (f'<?xml version="1.0" encoding="utf-8"?><m:error xmlns:m="http://schemas.microsoft.com/ado/2007/08/'
                                f'dataservices/metadata"><m:code>-2147018894, Microsoft.SharePoint.SPFileLockException</m:code>'
                                f'<m:message xml:lang="en-US">The file https://share.philips.com{SITE}/Shared Documents/{sp.name} '
-                               f'is locked for shared use by taesu.kim@philips.com [membership].</m:message></m:error>')
+                               f'is locked for shared use by {sp.lock_owner} [membership].</m:message></m:error>')
                         return self._send(423, msg.encode(), "application/xml")
                     match = self.headers.get("If-Match")
                     if match and match != sp.etag:
