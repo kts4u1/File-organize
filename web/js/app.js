@@ -72,7 +72,17 @@
   }
 
   // ------------------------------------------------------------ excel
-  async function loadExcel(bytes, name, demo) {
+  function loadExcel(bytes, name, demo) {
+    if (state.busy) {
+      toast("사진을 읽는 중에는 엑셀을 바꿀 수 없습니다. 끝난 뒤 다시 선택하세요.", "bad");
+      return Promise.resolve();
+    }
+    // photos chosen while this runs wait for it (see processFiles)
+    state.loading = openExcel(bytes, name, demo).finally(() => { state.loading = null; });
+    return state.loading;
+  }
+
+  async function openExcel(bytes, name, demo) {
     try {
       const wb = await ToolWorkbook.open(bytes.slice(0), name);
       state.excel = { bytes, name };
@@ -102,6 +112,7 @@
 
   // ------------------------------------------------------------ photos
   async function processFiles(files) {
+    if (state.loading) await state.loading;
     if (!state.wb) {
       toast("Tool Verification 엑셀 파일을 먼저 선택하세요.", "bad");
       return;
@@ -261,7 +272,7 @@
   function renderActions() {
     const n = state.jobs.filter(M.applicable).length;
     const btn = $("#apply");
-    btn.textContent = `엑셀 파일 만들기 (${n}건)`;
+    btn.textContent = $("#test-mode").checked ? `TEST 탭에 시험 반영 (${n}건)` : `엑셀 파일 만들기 (${n}건)`;
     btn.disabled = !n || state.busy;
     $("#actions").hidden = !state.jobs.length;
     $("#clear").disabled = state.busy;
@@ -276,36 +287,48 @@
 
   async function applyJobs() {
     const btn = $("#apply");
+    const testMode = $("#test-mode").checked;
     btn.disabled = true;
     btn.textContent = "엑셀 만드는 중…";
     try {
       const wb = await ToolWorkbook.open(state.excel.bytes.slice(0), state.excel.name);
       const changes = [];
       const today = todayIso();
+      const testRows = new Map(); // one TEST row per tool, even with a photo and a SMAX capture
       for (const job of state.jobs) {
         if (!M.applicable(job)) continue;
         const rec = wb.findRecord(job.target.sheet, job.target.row);
         if (!rec || M.normalizeSerial(rec.serial) !== M.normalizeSerial(job.target.serial)) continue;
         const before = { calLast: rec.calLast, calNext: rec.calNext };
+        // In test mode the original row is copied to the TEST tab and only the copy is changed.
+        let dest = rec;
+        if (testMode) {
+          if (!testRows.has(rec.key)) testRows.set(rec.key, await wb.appendTestRow(rec, `원본: ${rec.sheet} ${rec.row}행 · ${today} 시험 반영`));
+          dest = testRows.get(rec.key);
+        }
+        const columns = wb._info(dest.sheet).columns;
         const notes = [];
         let replaced = 0;
         if (job.kind === "tool_photo") {
           for (const [key, value] of [["cal_last", job.calLast], ["cal_next", job.calNext]]) {
-            if ((await wb.writeDate(rec, key, value)) === "formula") notes.push(`${key === "cal_next" ? "Cal Next" : "Cal Last"} 열은 수식이라 그대로 두었습니다.`);
+            if ((await wb.writeDate(dest, key, value)) === "formula") notes.push(`${key === "cal_next" ? "Cal Next" : "Cal Last"} 열은 수식이라 그대로 두었습니다.`);
           }
-          if (wb.sheets.get(rec.sheet).columns.label_photo) {
+          if (columns.label_photo) {
             const pic = await canvasBytes(job.labelCrop || job.image, "image/jpeg", 1000, 0.85);
-            replaced = await wb.replacePicture(rec, "label_photo", pic.bytes, "jpeg", pic.size, `Label ${rec.serial}`, `${job.fileName} (${today})`);
+            replaced = await wb.replacePicture(dest, "label_photo", pic.bytes, "jpeg", pic.size, `Label ${rec.serial}`, `${job.fileName} (${today})`);
           }
-        } else if (wb.sheets.get(rec.sheet).columns.smax_photo) {
+        } else if (columns.smax_photo) {
           const pic = await canvasBytes(job.image, "image/png", 1600);
-          replaced = await wb.replacePicture(rec, "smax_photo", pic.bytes, "png", pic.size, `SMAX ${rec.serial}`, `${job.fileName} (${today})`);
+          replaced = await wb.replacePicture(dest, "smax_photo", pic.bytes, "png", pic.size, `SMAX ${rec.serial}`, `${job.fileName} (${today})`);
         }
-        changes.push({ job, rec, before, after: { calLast: rec.calLast, calNext: rec.calNext }, replaced, notes });
+        changes.push({
+          job, rec, dest, before, replaced, notes,
+          after: { calLast: job.kind === "tool_photo" ? job.calLast : before.calLast, calNext: job.kind === "tool_photo" ? job.calNext : before.calNext },
+        });
       }
       const blob = await wb.toBlob();
       const bytes = new Uint8Array(await blob.arrayBuffer());
-      state.result = { blob, changes, name: state.excel.name };
+      state.result = { blob, changes, name: state.excel.name, testMode, testSheet: testMode && wb.testInfo ? wb.testInfo.name : null };
       // the updated file becomes the working copy for the next batch
       state.excel = { bytes, name: state.excel.name };
       state.wb = await ToolWorkbook.open(bytes.slice(0), state.excel.name);
@@ -331,21 +354,23 @@
     box.replaceChildren();
     box.hidden = !state.result;
     if (!state.result) return;
-    const { changes } = state.result;
+    const { changes, testMode, testSheet } = state.result;
     const rows = changes.map((c) => h("tr", {},
       h("td", {}, c.job.fileName),
-      h("td", {}, M.label(c.rec)),
+      h("td", {}, testMode ? `${testSheet} 탭 ${c.dest.row}행 ← ${M.label(c.rec)}` : M.label(c.rec)),
       h("td", {}, KIND[c.job.kind]),
       h("td", { class: "mono" }, c.job.kind === "tool_photo" ? `${c.before.calLast || "-"} → ${c.after.calLast}` : ""),
       h("td", { class: "mono" }, c.job.kind === "tool_photo" ? `${c.before.calNext || "-"} → ${c.after.calNext}` : ""),
       h("td", {}, c.replaced ? `교체 (${c.replaced}장 삭제)` : "추가", c.notes.length ? h("div", { class: "muted" }, c.notes.join(" ")) : null)));
     box.append(
       h("div", { class: "result-head" },
-        h("h3", {}, `${changes.length}건을 반영한 엑셀을 만들었습니다`),
+        h("h3", {}, testMode ? `'${testSheet}' 탭에 ${changes.length}건을 시험 반영했습니다` : `${changes.length}건을 반영한 엑셀을 만들었습니다`),
         h("div", { class: "row-gap" },
           h("button", { class: "primary", onclick: offerResult }, "엑셀 다시 저장"),
           h("button", { onclick: () => { state.result = null; renderAll(); } }, "닫기"))),
-      h("p", { class: "muted" }, `파일 이름: ${state.result.name} — 회사 공유 폴더의 원본을 이 파일로 바꿔 주세요. 다음 사진은 이 파일에 이어서 반영됩니다.`),
+      h("p", { class: "muted" }, testMode
+        ? `파일 이름: ${state.result.name} — 지역 시트는 그대로이고, 바뀐 행이 '${testSheet}' 탭에 복사되어 날짜와 사진이 들어갔습니다. 확인 후 SharePoint에 올려 보세요.`
+        : `파일 이름: ${state.result.name} — 회사 공유 폴더의 원본을 이 파일로 바꿔 주세요. 다음 사진은 이 파일에 이어서 반영됩니다.`),
       h("div", { class: "table-wrap" }, h("table", {},
         h("thead", {}, h("tr", {}, ...["사진", "대상", "종류", "교정일", "차기교정일", "사진"].map((t) => h("th", {}, t)))),
         h("tbody", {}, ...rows))));
@@ -512,6 +537,12 @@
     });
     $("#demo").addEventListener("click", startDemo);
     $("#apply").addEventListener("click", applyJobs);
+    const testBox = $("#test-mode");
+    try { testBox.checked = localStorage.getItem("tc-test-mode") === "1"; } catch (e) { /* storage unavailable */ }
+    testBox.addEventListener("change", () => {
+      try { localStorage.setItem("tc-test-mode", testBox.checked ? "1" : "0"); } catch (e) { /* storage unavailable */ }
+      renderActions();
+    });
     $("#clear").addEventListener("click", () => {
       state.jobs = [];
       renderJobs();

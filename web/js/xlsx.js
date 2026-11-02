@@ -24,6 +24,8 @@
   const REL_STYLES = REL + "/styles";
   const REL_SST = REL + "/sharedStrings";
   const CT_DRAWING = "application/vnd.openxmlformats-officedocument.drawing+xml";
+  const CT_WORKSHEET = "application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml";
+  const TEST_SHEET = "TEST";
   const XML_DECL = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n';
 
   const HEADER_ALIASES = {
@@ -38,6 +40,7 @@
     cycle: ["cal cycle", "cycle", "주기단위"],
     label_photo: ["label photo", "라벨 사진", "교정필증"],
     smax_photo: ["smax tool photo", "smax photo", "smax"],
+    note: ["test 메모"],
   };
   const REQUIRED = ["cal_next", "cal_last", "serial", "asset"];
   const NON_NAME_WORDS = new Set(("공통 등록 메디아나 사무실 폐기 예비 서울 부산 대구 인천 광주 대전 울산 세종 경기 " +
@@ -307,10 +310,18 @@
 
       this.sheets = new Map();
       this.records = [];
+      this.sheetNames = [];
+      this.testInfo = null;
       for (const sheet of wbDoc.getElementsByTagNameNS(NS.main, "sheet")) {
+        const name = sheet.getAttribute("name");
+        this.sheetNames.push(name);
         const t = targets.get(sheet.getAttributeNS(NS.r, "id"));
         if (!t || t.type !== REL_WORKSHEET || !this.has(t.part)) continue;
-        await this._readSheet(sheet.getAttribute("name"), t.part);
+        if (name.trim().toUpperCase() === TEST_SHEET) {
+          await this._readTestSheet(name, t.part); // trial output, not part of the tool list
+          continue;
+        }
+        await this._readSheet(name, t.part);
       }
       if (!this.sheets.size) {
         throw new Error("툴 목록 시트를 찾지 못했습니다. 헤더에 'Serial', 'Asset #', 'Cal Next', 'Cal Last' 열이 있어야 합니다.");
@@ -364,7 +375,7 @@
       return num;
     }
 
-    async _readSheet(name, part) {
+    async _sheetRows(part) {
       const doc = await this.xml(part);
       const rows = [];
       for (const row of doc.getElementsByTagNameNS(NS.main, "row")) {
@@ -375,8 +386,10 @@
         }
         rows.push({ r: +row.getAttribute("r"), values });
       }
-      let header = null;
-      let columns = null;
+      return rows;
+    }
+
+    _findHeader(rows) {
       for (const row of rows.slice(0, 10)) {
         const found = {};
         for (const [letter, value] of Object.entries(row.values)) {
@@ -385,12 +398,28 @@
             if (!found[key] && aliases.includes(h)) found[key] = letter;
           }
         }
-        if (REQUIRED.every((k) => found[k])) {
-          header = row.r;
-          columns = found;
-          break;
-        }
+        if (REQUIRED.every((k) => found[k])) return { header: row.r, columns: found };
       }
+      return { header: null, columns: null };
+    }
+
+    async _readTestSheet(name, part) {
+      const rows = await this._sheetRows(part);
+      const { header, columns } = this._findHeader(rows);
+      if (!header) return; // a TEST sheet of someone else's: leave it alone, use another name
+      const last = rows.reduce((m, r) => Math.max(m, r.r), header);
+      this.testInfo = { name, part, headerRow: header, columns, nextRow: last + 1 };
+    }
+
+    _info(sheet) {
+      if (this.sheets.has(sheet)) return this.sheets.get(sheet);
+      if (this.testInfo && this.testInfo.name === sheet) return this.testInfo;
+      return null;
+    }
+
+    async _readSheet(name, part) {
+      const rows = await this._sheetRows(part);
+      const { header, columns } = this._findHeader(rows);
       if (!header) return;
       this.sheets.set(name, { name, part, headerRow: header, columns });
       const text = (v) => {
@@ -495,7 +524,7 @@
 
     /** Returns "written" | "unchanged" | "formula". */
     async writeDate(rec, key, iso) {
-      const info = this.sheets.get(rec.sheet);
+      const info = this._info(rec.sheet);
       const letter = info.columns[key];
       const c = await this._cellEl(info, letter, rec.row);
       if (kid(c, NS.main, "f")) {
@@ -615,7 +644,7 @@
 
     /** Replace the pictures in the row's `key` column. Returns how many were removed. */
     async replacePicture(rec, key, bytes, ext, size, name, descr) {
-      const info = this.sheets.get(rec.sheet);
+      const info = this._info(rec.sheet);
       const letter = info.columns[key];
       if (!letter) throw new Error(`'${rec.sheet}' 시트에 사진 열이 없습니다.`);
       const drawing = await this._drawingPart(info, true);
@@ -716,6 +745,107 @@
       return removed.length;
     }
 
+    // ---------------------------------------------------- TEST sheet
+    /** The trial sheet: reuse an existing TEST tab with our header, else add one shaped like `source`. */
+    async ensureTestSheet(source) {
+      if (this.testInfo) return this.testInfo;
+      const taken = new Set(this.sheetNames.map((n) => n.trim().toUpperCase()));
+      let name = TEST_SHEET;
+      for (let i = 2; taken.has(name.toUpperCase()); i++) name = `${TEST_SHEET}${i}`;
+
+      const src = await this.xml(source.part);
+      const cols = src.getElementsByTagNameNS(NS.main, "cols")[0];
+      const fmt = src.getElementsByTagNameNS(NS.main, "sheetFormatPr")[0];
+      const part = this.uniquePartName("xl/worksheets", "sheet", "xml");
+      const doc = new DOMParser().parseFromString(
+        `<worksheet xmlns="${NS.main}" xmlns:r="${NS.r}"><sheetViews><sheetView workbookViewId="0">` +
+          `<pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>` +
+          `<sheetFormatPr defaultRowHeight="${(fmt && fmt.getAttribute("defaultRowHeight")) || 15}"/><sheetData/>` +
+          `<pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/></worksheet>`,
+        "application/xml");
+      const root = doc.documentElement;
+      const sheetData = kid(root, NS.main, "sheetData");
+      if (cols) root.insertBefore(doc.importNode(cols, true), sheetData);
+      this.docs.set(part, doc);
+      this.zip.file(part, "", { createFolders: false });
+      this.touch(part);
+      await this.addOverride(part, CT_WORKSHEET);
+      const rid = await this.addRel("xl/workbook.xml", REL_WORKSHEET, part);
+      const wb = await this.xml("xl/workbook.xml");
+      const sheets = wb.getElementsByTagNameNS(NS.main, "sheets")[0];
+      let maxId = 0;
+      for (const sh of kids(sheets, NS.main, "sheet")) maxId = Math.max(maxId, +sh.getAttribute("sheetId") || 0);
+      const el = wb.createElementNS(NS.main, "sheet");
+      el.setAttribute("name", name);
+      el.setAttribute("sheetId", String(maxId + 1));
+      el.setAttributeNS(NS.r, "r:id", rid);
+      sheets.appendChild(el);
+      this.touch("xl/workbook.xml");
+      this.sheetNames.push(name);
+
+      // header: the source header row as it is, plus a memo column
+      const headerRow = await this._rowEl(source, source.headerRow, false);
+      const row = doc.createElementNS(NS.main, "row");
+      row.setAttribute("r", "1");
+      let maxCol = 0;
+      for (const c of headerRow ? kids(headerRow, NS.main, "c") : []) {
+        const copy = doc.importNode(c, true);
+        const letter = (c.getAttribute("r") || "").match(/^([A-Z]+)/)[1];
+        maxCol = Math.max(maxCol, colToIndex(letter));
+        copy.setAttribute("r", `${letter}1`);
+        row.appendChild(copy);
+      }
+      const note = indexToCol(maxCol + 1);
+      row.appendChild(this._inlineCell(doc, `${note}1`, "TEST 메모"));
+      sheetData.appendChild(row);
+      const colsEl = kid(root, NS.main, "cols") || root.insertBefore(doc.createElementNS(NS.main, "cols"), sheetData);
+      const noteCol = doc.createElementNS(NS.main, "col");
+      for (const [k, v] of [["min", maxCol + 1], ["max", maxCol + 1], ["width", 44], ["customWidth", 1]]) noteCol.setAttribute(k, String(v));
+      colsEl.appendChild(noteCol);
+
+      this.testInfo = { name, part, headerRow: 1, columns: { ...source.columns, note }, nextRow: 2 };
+      return this.testInfo;
+    }
+
+    _inlineCell(doc, ref, text) {
+      const c = doc.createElementNS(NS.main, "c");
+      c.setAttribute("r", ref);
+      c.setAttribute("t", "inlineStr");
+      const is = doc.createElementNS(NS.main, "is");
+      const t = doc.createElementNS(NS.main, "t");
+      t.textContent = text;
+      is.appendChild(t);
+      c.appendChild(is);
+      return c;
+    }
+
+    /** Copy a tool row (values and styles, no pictures/formulas) to the next TEST row. Returns a record for it. */
+    async appendTestRow(rec, memo) {
+      const source = this.sheets.get(rec.sheet);
+      const info = await this.ensureTestSheet(source);
+      const doc = await this.xml(info.part);
+      const r = info.nextRow++;
+      const srcRow = await this._rowEl(source, rec.row, false);
+      const row = await this._rowEl(info, r, true);
+      row.setAttribute("ht", (srcRow && srcRow.getAttribute("ht")) || String(RAISED_ROW_PT));
+      row.setAttribute("customHeight", "1");
+      for (const c of srcRow ? kids(srcRow, NS.main, "c") : []) {
+        const letter = (c.getAttribute("r") || "").match(/^([A-Z]+)/)[1];
+        if (letter === source.columns.label_photo || letter === source.columns.smax_photo) continue;
+        const copy = doc.importNode(c, true);
+        copy.setAttribute("r", `${letter}${r}`);
+        const f = kid(copy, NS.main, "f");
+        if (f) f.remove(); // keep the value, not a formula pointing at the wrong row
+        row.appendChild(copy);
+      }
+      row.appendChild(this._inlineCell(doc, `${info.columns.note}${r}`, memo));
+      this.touch(info.part);
+      return {
+        ...rec, sheet: info.name, row: r, key: `${info.name}!${r}`, pictures: {},
+        calLast: rec.calLast, calNext: rec.calNext,
+      };
+    }
+
     // ---------------------------------------------------- save
     async toBlob() {
       for (const name of this.dirty) {
@@ -734,5 +864,5 @@
     }
   }
 
-  TC.xlsx = { ToolWorkbook, parseDate, addMonths, daysBetween, todayIso, indexToCol, colToIndex, isDateFormat };
+  TC.xlsx = { TEST_SHEET, ToolWorkbook, parseDate, addMonths, daysBetween, todayIso, indexToCol, colToIndex, isDateFormat };
 })();
