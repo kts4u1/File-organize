@@ -39,11 +39,32 @@
     return el;
   }
 
+  // ------------------------------------------------------------ desktop program (툴검교정.exe)
+  // The exe serves this page from 127.0.0.1 with a per-run token; SharePoint
+  // download/upload go through it because only Edge on the PC is logged in.
+  const DESKTOP_TOKEN = document.querySelector('meta[name="tc-token"]')?.content || "";
+  const desktop = { on: !!DESKTOP_TOKEN, sharepoint: false, name: "", output: "" };
+
+  async function api(path, options = {}) {
+    const res = await fetch(path, { ...options, headers: { ...(options.headers || {}), "X-TC-Token": DESKTOP_TOKEN } });
+    return res;
+  }
+  async function apiJson(path, options) {
+    const res = await api(path, options);
+    let body = null;
+    try { body = await res.json(); } catch (e) { /* not JSON */ }
+    return body || { ok: false, message: `오류 (${res.status})` };
+  }
+
   // ------------------------------------------------------------ downloads
   const inViewer = !!(window.claude && typeof window.claude.use === "function");
   const downloadsReady = inViewer ? window.claude.use("downloads").catch(() => null) : Promise.resolve(null);
 
   async function saveFile(blob, filename) {
+    if (desktop.on) {
+      const r = await apiJson(`/api/save?name=${encodeURIComponent(filename)}`, { method: "POST", body: blob });
+      return r.ok ? { ok: true, path: r.path } : { ok: false, message: r.message };
+    }
     const ns = await downloadsReady;
     if (ns) {
       try {
@@ -73,22 +94,22 @@
 
   // ------------------------------------------------------------ excel
   /** `bytes` may be a promise (still reading the file); photos chosen meanwhile wait for it. */
-  function loadExcel(bytes, name, demo) {
+  function loadExcel(bytes, name, demo, source = demo ? "demo" : "file") {
     if (state.busy) {
       toast("사진을 읽는 중에는 엑셀을 바꿀 수 없습니다. 끝난 뒤 다시 선택하세요.", "bad");
       return Promise.resolve();
     }
     const loading = Promise.resolve(bytes)
-      .then((b) => openExcel(b, name, demo))
+      .then((b) => openExcel(b, name, demo, source))
       .finally(() => { if (state.loading === loading) state.loading = null; });
     state.loading = loading;
     return loading;
   }
 
-  async function openExcel(bytes, name, demo) {
+  async function openExcel(bytes, name, demo, source) {
     try {
       const wb = await ToolWorkbook.open(bytes.slice(0), name);
-      state.excel = { bytes, name };
+      state.excel = { bytes, name, source };
       state.wb = wb;
       state.demo = !!demo;
       state.jobs = [];
@@ -335,9 +356,10 @@
       }
       const blob = await wb.toBlob();
       const bytes = new Uint8Array(await blob.arrayBuffer());
-      state.result = { blob, changes, name: state.excel.name, testMode, testSheet: testMode && wb.testInfo ? wb.testInfo.name : null };
+      state.result = { blob, changes, name: state.excel.name, source: state.excel.source, testMode,
+                       testSheet: testMode && wb.testInfo ? wb.testInfo.name : null, upload: null };
       // the updated file becomes the working copy for the next batch
-      state.excel = { bytes, name: state.excel.name };
+      state.excel = { bytes, name: state.excel.name, source: state.excel.source };
       state.wb = await ToolWorkbook.open(bytes.slice(0), state.excel.name);
       state.jobs = [];
       renderAll();
@@ -407,8 +429,71 @@
   async function offerResult() {
     if (!state.result) return;
     const r = await saveFile(state.result.blob, state.result.name);
-    if (r.ok) toast("엑셀 파일을 저장했습니다.", "good");
+    if (r.ok) toast(r.path ? `엑셀 사본을 저장했습니다: ${r.path}` : "엑셀 파일을 저장했습니다.", "good");
     else toast(r.message, "bad");
+  }
+
+  // ------------------------------------------------------------ SharePoint (desktop only)
+  async function downloadFromSharePoint() {
+    const btn = $("#sp-download");
+    btn.disabled = true;
+    btn.textContent = "SharePoint에서 받는 중… (로그인 창이 뜨면 로그인)";
+    try {
+      const res = await api("/api/sp/download", { method: "POST" });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        toast(err.message || `받지 못했습니다 (${res.status}).`, "bad");
+        return;
+      }
+      const name = decodeURIComponent(res.headers.get("X-File-Name") || "Tool_Verification.xlsx");
+      const modified = decodeURIComponent(res.headers.get("X-Modified") || "");
+      await loadExcel(new Uint8Array(await res.arrayBuffer()), name, false, "sharepoint");
+      desktop.name = name;
+      $("#sp-name").textContent = `SharePoint: ${name}`;
+      toast(`SharePoint 최신본을 받았습니다${modified ? ` (수정 ${modified.replace("T", " ").replace("Z", " UTC")})` : ""}.`, "good");
+    } catch (e) {
+      toast(`받지 못했습니다: ${e.message}`, "bad");
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "SharePoint에서 최신 파일 받기";
+    }
+  }
+
+  async function uploadToSharePoint() {
+    const result = state.result;
+    if (!result) return;
+    result.upload = { busy: true };
+    renderResult();
+    const r = await apiJson("/api/sp/upload", { method: "POST", body: result.blob });
+    result.upload = r.ok ? { done: true, ...r } : { error: r.message || "올리지 못했습니다.", code: r.code };
+    renderResult();
+    toast(r.ok ? "SharePoint에 올렸습니다." : result.upload.error, r.ok ? "good" : "bad");
+  }
+
+  function sharePointBox(result) {
+    if (!desktop.on || !desktop.sharepoint) return null;
+    const up = result.upload || {};
+    if (result.source !== "sharepoint") {
+      return h("div", { class: "sp-box" }, h("p", { class: "muted" },
+        "SharePoint에 올리려면 위의 'SharePoint에서 최신 파일 받기'로 받은 파일에 반영해야 합니다 (그래야 다른 사람의 최신 수정이 지워지지 않습니다)."));
+    }
+    if (up.done) {
+      return h("div", { class: "sp-box done" },
+        h("strong", {}, `SharePoint에 올렸습니다: ${up.name}`),
+        h("p", { class: "muted" }, `지금 SharePoint 파일의 시트: ${(up.sheets || []).join(", ")}`,
+          up.modified ? ` · 수정 시각 ${String(up.modified).replace("T", " ").replace("Z", " UTC")}` : ""),
+        h("p", { class: "muted small" }, "이전 버전은 SharePoint의 '버전 기록'에서 되돌릴 수 있습니다."));
+    }
+    const what = result.testMode
+      ? `지역 시트는 그대로 두고 '${result.testSheet}' 탭에 ${result.changes.length}건이 들어갑니다.`
+      : `지역 시트의 ${result.changes.length}건(날짜·사진)이 바뀝니다.`;
+    return h("div", { class: `sp-box ${up.error ? "bad" : ""}` },
+      h("strong", {}, `SharePoint의 '${desktop.name || result.name}'에 올리기`),
+      h("p", {}, what, " 받은 뒤 다른 사람이 파일을 바꿨거나 지금 편집 중이면 올리지 않고 알려 드립니다. 이전 버전은 SharePoint 버전 기록에 남습니다."),
+      up.error ? h("p", { class: "sp-error" }, up.error) : null,
+      h("div", { class: "row-gap" },
+        h("button", { class: "primary", id: "sp-upload", disabled: !!up.busy, onclick: uploadToSharePoint },
+          up.busy ? "올리는 중…" : up.error ? "다시 올리기" : "SharePoint에 올리기")));
   }
 
   function renderResult() {
@@ -436,6 +521,8 @@
       h("div", { class: "table-wrap" }, h("table", {},
         h("thead", {}, h("tr", {}, ...["사진", "대상", "종류", "교정일", "차기교정일", "사진"].map((t) => h("th", {}, t)))),
         h("tbody", {}, ...rows))));
+    const sp = sharePointBox(state.result);
+    if (sp) box.append(sp);
   }
 
   // ------------------------------------------------------------ due dates
@@ -626,6 +713,17 @@
     try { tab = localStorage.getItem("tc-tab") || tab; } catch (e) { /* storage unavailable */ }
     showTab(["update", "status", "stickers"].includes(tab) ? tab : "update");
     renderAll();
+    if (desktop.on) {
+      apiJson("/api/status").then((st) => {
+        desktop.sharepoint = !!st.sharepoint;
+        desktop.name = st.name || "";
+        desktop.output = st.output || "";
+        if (!desktop.sharepoint) return;
+        $("#sp-row").hidden = false;
+        $("#sp-name").textContent = desktop.name ? `SharePoint: ${desktop.name}` : "SharePoint 파일";
+      });
+      $("#sp-download").addEventListener("click", downloadFromSharePoint);
+    }
     // warm up the OCR engine in the background so the first photo is quicker
     setTimeout(async () => {
       const el = $("#engine-status");

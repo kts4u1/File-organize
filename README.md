@@ -20,6 +20,36 @@ SMAX 화면 캡쳐를 같이 올리면 `SMAX Tool Photo` 칸도 교체합니다.
 
 ---
 
+## 회사 PC 프로그램 `툴검교정.exe` — SharePoint 받기·올리기까지 (권장)
+
+고객안내문 대시보드(FSN) 프로그램과 같은 방식입니다. 회사 PC의 Edge가 Windows 회사 로그인(SSO)으로 SharePoint를 열고,
+그 페이지 안에서 파일을 받고 올립니다. API 키나 별도 승인이 필요 없고, 본인이 Edge에서 할 수 있는 만큼만 합니다.
+
+**설치 (처음 한 번)**
+1. 브랜치 ZIP 받기: <https://github.com/kts4u1/File-organize/archive/refs/heads/claude/exciting-lovelace-hs156x.zip>
+2. 압축 풀기 → `build.bat` 더블클릭 → `dist\툴검교정.exe` 생성 (1~2분)
+
+**사용**
+1. `툴검교정.exe` 실행 → 작은 상태 창과 Edge 창(도구 화면)이 열립니다.
+2. STEP 1의 **SharePoint에서 최신 파일 받기** (처음엔 로그인 창이 뜰 수 있음 → 회사 계정으로 로그인)
+3. STEP 2에 사진 → 카드 확인 → 시험이면 **원본 시트는 그대로 두고 TEST 탭에만 시험 반영** 체크 → 반영 버튼
+4. 결과 아래 **SharePoint에 올리기** → 끝나면 "지금 SharePoint 파일의 시트: … TEST" 로 확인됩니다.
+
+**안전장치**
+- 받은 뒤 다른 사람이 파일을 저장했으면(ETag가 바뀜) 올리지 않고 "최신 파일을 다시 받으세요"라고 알려 줍니다.
+- 누군가 Excel(웹/PC)에서 파일을 열어 **편집 중이면 SharePoint가 잠가서** 올리기가 거절됩니다(423). 모두 닫은 뒤 다시 올리거나,
+  열려 있는 채로 반영하려면 **Excel 웹 스크립트** 방식을 쓰세요(아래).
+- 올릴 때마다 SharePoint 버전 기록에 이전 버전이 남고, PC에도 사본이 `%USERPROFILE%\ToolCal\output`에 저장됩니다.
+- 'SharePoint에서 받은 파일'에 반영한 결과만 올릴 수 있습니다(다른 사람의 최신 수정을 덮어쓰지 않도록).
+
+**설정·문제 해결**
+- 다른 엑셀을 쓰려면 `%USERPROFILE%\ToolCal\config.json`에 `{"sharepoint_url": "SharePoint 엑셀 주소"}`
+  (엑셀 웹에서 주소창의 `…/_layouts/15/Doc.aspx?…sourcedoc=…` 주소)
+- 기록: `%USERPROFILE%\ToolCal\debug_log.txt` (상태 창의 [로그 폴더])
+- Edge 창을 닫았으면 상태 창의 [도구 화면 열기], 끝낼 때는 상태 창을 닫습니다.
+
+---
+
 ## 브라우저 버전 (API 불필요)
 
 claude.ai에 올린 페이지(Artifact)로 바로 씁니다: <https://claude.ai/artifact/APBdgkG9sx6URYhA2a3WWp> (기본은 본인만 열 수 있음 — 동료에게는 페이지의 공유 메뉴로 공유).
@@ -160,6 +190,9 @@ python -m pytest
 | 파일 | 역할 |
 |---|---|
 | `web/index.html`, `web/js/*.js` | 브라우저 버전 (JSZip·jsQR·Tesseract.js, 서버/API 없음) |
+| `web/vendor/`, `web/tesseract/` | 함께 배포하는 라이브러리·OCR 엔진 (`web/THIRD_PARTY_NOTICES.md`) |
+| `desktop/` , `desktop_main.py`, `build.py`, `build.bat` | 회사 PC 프로그램 `툴검교정.exe` (로컬 서버 + Edge SharePoint 받기/올리기) |
+| `web/js/officescript.js` | Excel 웹에서 실행하는 Office Script 생성 |
 | `app.py` | Python 웹 화면 (Streamlit) |
 | `toolcal/recognize.py` | Claude 비전 인식 (구조화된 JSON 출력) |
 | `toolcal/label_crop.py` | 교정필증 위치 검출·크롭·기울기 보정 (OpenCV) |

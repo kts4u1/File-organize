@@ -149,6 +149,14 @@
     padding: 12px 14px calc(12px + env(safe-area-inset-bottom, 0px)); background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
   }
 
+  /* SharePoint (desktop program) */
+  .sp-row { position: relative; z-index: 1; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding-top: 6px; border-top: 1px dashed var(--line); }
+  .sp-box { display: grid; gap: 6px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); }
+  .sp-box p { margin: 0; }
+  .sp-box.done { border-color: var(--ok); background: var(--ok-bg); }
+  .sp-box.bad { border-color: var(--error); }
+  .sp-error { color: var(--error); font-weight: 600; }
+
   /* office script */
   #script-panel { background: var(--surface); border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: var(--radius); padding: 16px; display: grid; gap: 10px; }
   #script-panel ol { margin: 0; padding-left: 20px; display: grid; gap: 4px; }
@@ -228,6 +236,10 @@
       <div id="excel-summary"></div>
       <span class="pick"><button type="button" tabindex="-1">엑셀 파일 선택</button></span>
       <input type="file" id="excel-input" accept=".xlsx" aria-label="엑셀 파일 선택">
+      <div class="sp-row" id="sp-row" hidden>
+        <button type="button" class="primary" id="sp-download">SharePoint에서 최신 파일 받기</button>
+        <span class="muted small" id="sp-name"></span>
+      </div>
     </div>
     <div class="drop" id="photo-drop">
       <span class="step">STEP 2</span>
