@@ -373,11 +373,21 @@
 
   // ------------------------------------------------------------ office script
   function makeScript() {
-    const testMode = $("#test-mode").checked;
-    const script = TC.officeScript.build(state.jobs, testMode);
+    showScript(state.jobs, $("#test-mode").checked);
+  }
+
+  function showScript(jobs, testMode) {
+    const script = TC.officeScript.build(jobs, testMode);
     state.script = { ...script, testMode };
     renderScript();
     $("#script-panel").scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  /** The same changes as the built file, as a script: works while others have the file open. */
+  function scriptFromResult() {
+    const result = state.result;
+    if (!result) return;
+    showScript(result.changes.map((c) => c.job), result.testMode);
   }
 
   function renderScript() {
@@ -404,12 +414,15 @@
       toast(r.ok ? "스크립트 파일을 저장했습니다." : r.message, r.ok ? "good" : "bad");
     };
     const details = h("details", {}, h("summary", {}, "스크립트 직접 보기"), area);
-    box.append(
+    box.append(...[  // optional parts are null: leave them out instead of printing "null"
       h("div", { class: "result-head" },
         h("h3", {}, `Excel 웹에서 실행할 스크립트를 만들었습니다 (${count}건 · ${Math.ceil(size / 1024)} KB)`),
         h("div", { class: "row-gap" },
           h("button", { class: "primary", onclick: copy }, "스크립트 복사"),
           h("button", { onclick: save }, ".txt로 저장"),
+          desktop.on && desktop.url
+            ? h("a", { class: "button-link", href: desktop.url, target: "_blank", rel: "noopener" }, "Excel 웹에서 파일 열기")
+            : null,
           h("button", { onclick: () => { state.script = null; renderScript(); } }, "닫기"))),
       h("p", { class: "muted" }, testMode
         ? "지역 시트는 그대로 두고, 바뀔 행을 'TEST' 탭에 복사해 새 날짜와 사진을 넣습니다."
@@ -423,7 +436,7 @@
       size > 1.5 * 1024 * 1024
         ? h("p", { class: "muted small", style: "color: var(--review)" }, "사진이 많아 스크립트가 큽니다. 붙여넣기가 느리거나 실패하면 사진을 10장 정도씩 나눠서 만드세요.")
         : null,
-      details);
+      details].filter(Boolean));
   }
 
   async function offerResult() {
@@ -503,8 +516,14 @@
       h("strong", {}, `SharePoint의 '${desktop.name || result.name}'에 올리기`),
       h("p", {}, what, " 받은 뒤 다른 사람이 파일을 바꿨거나 지금 편집 중이면 올리지 않고 알려 드립니다. 이전 버전은 SharePoint 버전 기록에 남습니다."),
       up.error ? h("p", { class: "sp-error" }, up.error) : null,
+      up.code === "locked"
+        ? h("p", { class: "muted" }, "Excel 웹 스크립트는 열려 있는 파일 안에서 바뀐 부분만 넣기 때문에, 다른 사람이 파일을 열어 두어도 반영됩니다.")
+        : null,
       h("div", { class: "row-gap" },
-        h("button", { class: "primary", id: "sp-upload", disabled: !!up.busy, onclick: uploadToSharePoint },
+        up.code === "locked"
+          ? h("button", { class: "primary", id: "sp-script", onclick: scriptFromResult }, "Excel 웹 스크립트로 반영")
+          : null,
+        h("button", { class: up.code === "locked" ? "" : "primary", id: "sp-upload", disabled: !!up.busy, onclick: uploadToSharePoint },
           up.busy ? "올리는 중…" : up.error ? "다시 올리기" : "SharePoint에 올리기")));
   }
 
@@ -730,6 +749,7 @@
         desktop.sharepoint = !!st.sharepoint;
         desktop.name = st.name || "";
         desktop.output = st.output || "";
+        desktop.url = st.url || "";
         if (!desktop.sharepoint) return;
         $("#sp-row").hidden = false;
         $("#sp-name").textContent = desktop.name ? `SharePoint: ${desktop.name}` : "SharePoint 파일";

@@ -34,7 +34,12 @@ Cal Last / Cal Next와 Label Photo / SMAX Tool Photo를 고치는 도구입니�
   3분간 진행 없으면 중단, 명령 대기 120초. 테스트 `test_slow_transfers_outlast_the_webdriver_command_limit`(이전 코드는 같은 오류로 실패).
 - 실제 SharePoint 파일 이름은 `Tool list for Field validation 20250325.xlsx` (처음 받은 사본과 다를 수 있음 → 시트/헤더 확인 필요).
 
+- 2026-11-02 두 번째 실행: 받기 성공, TEST 반영 후 올리기(207.8 MB, 76초)에서 423
+  `SPFileLockException … locked for shared use by taesu.kim@philips.com` — 다른 사람이 Excel에서 열어 둠. 팀 공용 파일이라 흔한 상황.
+  → 423이면 잠근 사람을 표시하고 결과 칸에 'Excel 웹 스크립트로 반영' 버튼(같은 변경으로 Office Script 생성) + 'Excel 웹에서 파일 열기' 링크.
+  파일째 교체는 아무도 안 열었을 때만 가능. 실제 파일이 약 208 MB라 받기·올리기가 각각 1분 이상 걸림.
+
 ## 열린 항목 (2026-11-02)
-- 사용자 PC에서 `툴검교정.exe` 다시 빌드·실행: SharePoint 받기(진행 MB 표시) → TEST 탭 반영 → 올리기 결과(성공/423 잠김/권한) 확인.
+- Office Script(Excel 웹 자동화 탭) 실제 실행 결과 확인 — 잠긴 파일에 반영하는 주 경로가 됨. 자동화 탭이 없으면 다른 방법 필요(아무도 안 열었을 때 교체 등).
 - Office Script 첫 실제 실행 결과 확인.
 - 손글씨 시리얼 인식률은 휴대폰 원본 해상도 사진으로 다시 확인. 확실하게 하려면 QR 스티커 사용 권장.

@@ -37,6 +37,14 @@ def test_parse_rejects_other_links():
         SharePointFile.parse("https://share.philips.com/sites/HSCSCCJ-jr-all/Shared%20Documents/x.xlsx")
 
 
+def test_lock_owner_from_sharepoint_answer():
+    from desktop.sharepoint import lock_owner
+    text = ('<m:message xml:lang="en-US">The file https://share.philips.com/sites/HSCSCCJ-jr-all/Shared Documents/'
+            'Tool list for Field validation 20250325.xlsx is locked for shared use by taesu.kim@philips.com [membership].</m:message>')
+    assert lock_owner(text) == "taesu.kim@philips.com"
+    assert lock_owner("other error") == ""
+
+
 def test_explain_codes():
     assert explain(423)[0] == "locked" and explain(412)[0] == "changed" and explain(403)[0] == "denied"
 
@@ -167,7 +175,7 @@ def test_sharepoint_through_a_real_browser(browser_env, tmp_path):
         mock.locked = True
         with pytest.raises(SharePointError) as e:
             sp.upload(changed)
-        assert e.value.code == "locked"
+        assert e.value.code == "locked" and "taesu.kim@philips.com" in str(e.value)
     finally:
         session.quit()
         mock.stop()

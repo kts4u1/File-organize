@@ -126,7 +126,11 @@ class MockSharePoint:
                     if self.headers.get("X-RequestDigest") != DIGEST:
                         return self._send(403, b"The security validation for this page is invalid.")
                     if sp.locked:
-                        return self._send(423, b'{"error":{"message":"The file is locked for shared use by someone."}}', "application/json")
+                        msg = (f'<?xml version="1.0" encoding="utf-8"?><m:error xmlns:m="http://schemas.microsoft.com/ado/2007/08/'
+                               f'dataservices/metadata"><m:code>-2147018894, Microsoft.SharePoint.SPFileLockException</m:code>'
+                               f'<m:message xml:lang="en-US">The file https://share.philips.com{SITE}/Shared Documents/{sp.name} '
+                               f'is locked for shared use by taesu.kim@philips.com [membership].</m:message></m:error>')
+                        return self._send(423, msg.encode(), "application/xml")
                     match = self.headers.get("If-Match")
                     if match and match != sp.etag:
                         return self._send(412, b'{"error":{"message":"The version of the file has changed."}}', "application/json")

@@ -174,6 +174,12 @@ def sheet_names(data: bytes) -> list[str]:
     return [n.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", '"') for n in names]
 
 
+def lock_owner(text: str) -> str:
+    """Who holds a SharePoint lock, from a 423 answer ('…locked for shared use by a.b@philips.com [membership]')."""
+    m = re.search(r"locked for (?:shared|exclusive) use by ([^\s<\[]+)", text or "")
+    return m.group(1) if m else ""
+
+
 def explain(status: int | None, step: str = "") -> tuple[str, str]:
     """(code, Korean message) for a SharePoint HTTP status."""
     if status == 423:
@@ -477,6 +483,10 @@ class SharePoint:
                     status = res.get("status") if isinstance(res, dict) else None
                     self.log(f"올리기 실패: {res}")
                     code, msg = explain(status, res.get("step", "") if isinstance(res, dict) else "")
+                    owner = lock_owner(res.get("text", "") if isinstance(res, dict) else "")
+                    if status == 423 and owner:
+                        msg = (f"{owner} 님이 이 파일을 Excel에서 열어 두어 SharePoint가 잠가 두었습니다. "
+                               "누군가 열어 둔 동안에는 파일째 바꿀 수 없으니, 아래 'Excel 웹 스크립트로 반영'을 쓰세요.")
                     raise SharePointError(msg, status, code)
                 self.log(f"올리기 완료 ({time.time() - t0:.0f}초)")
                 after = self._file_info()
