@@ -6,6 +6,8 @@ Cal Last / Cal Next와 Label Photo / SMAX Tool Photo를 고치는 도구입니�
 ## 사용자 / 작업 방식
 - 사용자는 Philips 한국 현장 서비스 엔지니어, 프로그래밍 경험 없음. 코드는 Claude가 작성·디버깅. 대화는 한국어 존댓말, 짧고 구체적으로.
 - 회사 Windows PC, Python 3.14.x, `pip` 대신 항상 `python -m pip`. 브랜치 ZIP → 압축 풀기 → `build.bat` → `dist\툴검교정.exe`.
+- 새 빌드 안내 때는 ZIP 주소를 링크 글자로 숨기지 말고 전체 주소 그대로 적기(2026-11-02 요청):
+  `ZIP 받기: https://github.com/kts4u1/File-organize/archive/refs/heads/claude/exciting-lovelace-hs156x.zip`
 - API 키는 쓰지 않기로 함(2026-10-15 "API는 필요없게"). 회사 데이터는 Claude 환경에서 볼 수 없음(SharePoint 403).
 - "일단 만들어 보고 수정은 하나씩". 큰 구조 변경은 먼저 확인.
 
