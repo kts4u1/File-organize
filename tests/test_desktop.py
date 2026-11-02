@@ -32,6 +32,15 @@ def test_parse_fco_style_link_with_name():
     assert f.name == "MR FCO Action Plan.xlsx"
 
 
+def test_view_link_does_not_open_the_workbook_for_editing():
+    """Edit mode locks the file in the user's name (423 on the next upload); the check after an upload uses view mode."""
+    f = SharePointFile.parse(USER_URL)
+    assert f.view_url == USER_URL.replace("action=edit", "action=view")
+    g = SharePointFile.parse("https://share.philips.com/:x:/r/sites/K/_layouts/15/Doc.aspx?sourcedoc=%7B41877D54-C06C-43EA-"
+                             "A61A-D8EE1F661BF5%7D&file=a.xlsx")
+    assert g.view_url.startswith("https://share.philips.com/:x:/r/sites/K/_layouts/15/Doc.aspx?action=view&sourcedoc=")
+
+
 def test_parse_rejects_other_links():
     with pytest.raises(SharePointError):
         SharePointFile.parse("https://share.philips.com/sites/HSCSCCJ-jr-all/Shared%20Documents/x.xlsx")
@@ -327,5 +336,64 @@ def test_program_ends_when_the_tool_window_is_closed(browser_env, tmp_path, monk
         assert session.driver is None  # Edge (with the SharePoint window) was closed too
     finally:
         program.stop()
+        mock.stop()
+        shutil.rmtree(tmp_path / "profile", ignore_errors=True)
+
+
+def test_sharepoint_window_stays_out_of_the_way(browser_env, tmp_path):
+    """2026-11-02: the 'Site contents' window was always on screen, and closing it broke the transfer.
+    Now it stays minimized, survives being closed, and shows the uploaded file (view mode) at the end."""
+    import threading
+    import time
+
+    from desktop.sharepoint import BrowserSession, SharePoint
+
+    path = build_workbook(tmp_path / "win.xlsx", with_pictures=False)
+    with open(path, "rb") as fh:
+        original = fh.read()
+    mock = MockSharePoint(original).start()
+    messages = []
+    session = BrowserSession(tmp_path / "profile", report=messages.append, browser="chrome", binary=CHROMIUM, headless=True)
+    try:
+        session.start()
+        session.driver.switch_to.new_window("window")  # see test_program_ends_when_the_tool_window_is_closed
+        session.open_tool("data:text/html,<p>tool</p>")
+        sp = SharePoint(session, SharePointFile.parse(mock.page_url), report=messages.append, login_timeout=20)
+
+        def state(handle):
+            with session.lock:
+                return session.driver.execute_cdp_cmd("Browser.getWindowForTarget", {"targetId": handle})["bounds"]["windowState"]
+
+        data, _ = sp.download()
+        assert state(session.sp_window) == "minimized" and state(session.tool_window) != "minimized"
+        assert session.driver.current_window_handle == session.tool_window
+        with session.lock:
+            session.driver.switch_to.window(session.sp_window)
+            assert "닫지 마세요" in session.driver.title  # says what it is, if the user opens it from the taskbar
+            session.show_tool()
+
+        # the user closes the SharePoint window in the middle of a download: it is opened again and finishes
+        mock.download_seconds = 6
+        closed = session.sp_window
+        threading.Timer(2.5, lambda: session.driver.execute_cdp_cmd("Target.closeTarget", {"targetId": closed})).start()
+        data2, _ = sp.download()
+        assert data2 == original and session.sp_window != closed
+        assert any("다시 여는 중" in m for m in messages)
+        mock.download_seconds = 0
+
+        # after an upload the file itself is shown, for viewing only, so it is not locked
+        result = sp.upload(data2)
+        assert result["ok"] and result["opened"] and mock.views == 1 and not mock.locked
+        with session.lock:
+            assert session.driver.current_window_handle == session.sp_window
+            assert "Doc.aspx?action=view" in session.driver.current_url
+        assert state(session.sp_window) != "minimized"
+
+        # the next round leaves the workbook page first, and the upload is not blocked
+        data3, _ = sp.download()
+        assert state(session.sp_window) == "minimized"
+        assert sp.upload(data3)["ok"] and not mock.locked
+    finally:
+        session.quit()
         mock.stop()
         shutil.rmtree(tmp_path / "profile", ignore_errors=True)

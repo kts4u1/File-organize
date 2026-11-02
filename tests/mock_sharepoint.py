@@ -25,6 +25,7 @@ class MockSharePoint:
         self.name = name
         self.version = 7
         self.locked = False
+        self.views = 0  # times the workbook was opened for viewing (after an upload)
         self.lock_owner = "taesu.kim@philips.com"
         self.download_seconds = 0.0  # >0: send the file slowly, like a slow network
         self.upload_seconds = 0.0  # >0: answer the upload late
@@ -83,9 +84,12 @@ class MockSharePoint:
                 u = urlparse(self.path)
                 sp.requests.append(f"GET {u.path}")
                 if u.path.endswith("/_layouts/15/Doc.aspx"):
-                    # Excel for the web opens the workbook for editing: SharePoint locks it for this user
-                    sp.locked = True
-                    sp.lock_owner = "taesu.kim@philips.com"
+                    if (parse_qs(u.query).get("action") or [""])[0].lower() == "view":
+                        sp.views += 1  # Excel for the web, viewing only: no lock
+                    else:
+                        # Excel for the web opens the workbook for editing: SharePoint locks it for this user
+                        sp.locked = True
+                        sp.lock_owner = "taesu.kim@philips.com"
                     return self._send(200, b"<html><body>Excel Online (mock)</body></html>", "text/html",
                                       {"Set-Cookie": "FedAuth=ok; Path=/; HttpOnly"})
                 if u.path == f"{SITE}/_layouts/15/viewlsts.aspx":

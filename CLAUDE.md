@@ -58,8 +58,17 @@ Cal Last / Cal Next와 Label Photo / SMAX Tool Photo를 고치는 도구입니�
 - 같은 날 저녁: 자동 받기 + `SharePoint에 반영` 한 번에 올리기 성공(사용자 화면 확인). 이때 받은 파일은 10.7 MB(전엔 207.8 MB),
   시트 `Calweb등록필요`가 새로 생김 — 그 사이 누가 Excel에서 정리·저장한 것으로 보임.
 
+- 같은 날: "왜 사이트 콘텐츠 창이 항상 떠 있어? 닫으면 업로드도 안 돼" + "마지막에는 파일(Doc.aspx) 창이 열려야 확인할 수 있어".
+  → SharePoint 창은 평소 최소화(`tuck_sharepoint`), 로그인 페이지가 3초 넘게 기다릴 때만 앞으로(`show_sharepoint`),
+  제목·노란 안내줄 "닫지 마세요"(`LABEL_JS`). 창이 닫혀 명령이 실패하면 다시 열고 한 번 재시도(`_again_if_window_closed`;
+  PUT을 보낸 뒤면 재시도하지 않고 '다시 올리기' 안내 — 이미 올라갔으면 412 → '최신 파일로 다시 반영'). 10분 넘게 쉬었으면 사이트 콘텐츠를 다시 열어 로그인 갱신.
+  올리기 성공 뒤 그 창에 파일을 **보기 모드**(`view_url`, action=view — edit는 본인 이름 잠금 → 423)로 열고 앞에 둠(`keep_front`).
+  다음 받기/올리기 때 `_open_page`가 파일 화면을 벗어남. 테스트 `test_sharepoint_window_stays_out_of_the_way`(흉내 서버: action=view는 잠그지 않음).
+
 ## 열린 항목 (2026-11-02)
-- 창 하나(상태 창 제거, Edge 창 닫으면 종료) — 새 빌드로 실제 확인 필요.
+- 창 하나(상태 창 제거, Edge 창 닫으면 종료) + SharePoint 창 최소화 + 올린 뒤 파일 보기 — 새 빌드로 실제 확인 필요.
+  (Windows Edge에서 msedgedriver가 창을 바꿀 때 최소화된 창을 다시 띄우는지는 미확인 — 띄우면 잠깐 보였다가 다시 최소화됨)
+- Excel 웹 보기 모드(action=view)가 실제로 잠그지 않는지 확인(올린 뒤 파일 보는 중에 다음 사진 올리기).
 - 다른 사람이 실제로 열어 둔 경우엔 Office Script(Excel 웹 자동화 탭) 경로 — 실제 실행 결과 미확인.
 - Office Script 첫 실제 실행 결과 확인.
 - 손글씨 시리얼 인식률은 휴대폰 원본 해상도 사진으로 다시 확인. 확실하게 하려면 QR 스티커 사용 권장.

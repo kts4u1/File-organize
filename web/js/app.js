@@ -612,6 +612,9 @@
         h("strong", {}, `SharePoint에 올렸습니다: ${up.name}`),
         h("p", { class: "muted" }, `지금 SharePoint 파일의 시트: ${(up.sheets || []).join(", ")}`,
           up.modified ? ` · 수정 시각 ${String(up.modified).replace("T", " ").replace("Z", " UTC")}` : ""),
+        up.opened
+          ? h("p", {}, "확인용으로 SharePoint 창에 방금 올린 파일을 열었습니다(보기 모드). 확인한 뒤 그 창은 닫아도 됩니다.")
+          : null,
         h("p", { class: "muted small" }, "이전 버전은 SharePoint의 '버전 기록'에서 되돌릴 수 있습니다."));
     }
     if (up.busy) {

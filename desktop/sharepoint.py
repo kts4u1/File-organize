@@ -33,6 +33,28 @@ COMMAND_TIMEOUT = 120  # max wait for one WebDriver command; long transfers are 
 TRANSFER_DEADLINE = 20 * 60  # give up a download/upload after this many seconds
 STALL_LIMIT = 180  # …or when a download receives nothing for this long
 LOGIN_HOSTS = ("login.microsoftonline", "login.live", "/adfs/", "login.windows", "sso.")
+# The SharePoint window only does the transfers (it holds the user's login); it stays minimized and says so.
+SP_TITLE = "툴 검교정 · SharePoint 연결 창 (닫지 마세요)"
+SP_NOTE = ("툴 검교정 프로그램이 이 창으로 SharePoint 파일을 받고 올립니다. 닫지 말고 그대로 두세요 "
+           "(평소에는 최소화되어 있고, 프로그램을 끝내면 같이 닫힙니다).")
+LABEL_JS = r"""
+document.title = arguments[0];
+if (!document.getElementById('tc-note')) {
+  const d = document.createElement('div');
+  d.id = 'tc-note';
+  d.textContent = arguments[1];
+  d.style.cssText = 'position:fixed;left:0;right:0;top:0;z-index:2147483647;background:#f0b400;color:#1d1600;' +
+    'font:600 14px "Malgun Gothic",sans-serif;padding:8px 14px;text-align:center;box-shadow:0 2px 6px rgba(0,0,0,.25)';
+  document.documentElement.appendChild(d);
+}
+"""
+
+
+def window_closed(exc: Exception) -> bool:
+    """Did a browser command fail because its window was closed (e.g. the user closed the SharePoint window)?"""
+    text = f"{type(exc).__name__} {exc}".lower()
+    return any(w in text for w in ("nosuchwindow", "no such window", "window already closed", "web view not found",
+                                   "target frame detached"))
 
 
 class SharePointError(Exception):
@@ -72,6 +94,16 @@ class SharePointFile:
     @property
     def download_url(self) -> str:
         return f"{self.site}/_layouts/15/download.aspx?UniqueId={self.guid}"
+
+    @property
+    def view_url(self) -> str:
+        """The file link opened in Excel for the web for viewing only (no edit lock)."""
+        u = urlparse(self.url)
+        if re.search(r"(^|&)action=", u.query, re.I):
+            query = re.sub(r"(^|&)action=[^&]*", r"\1action=view", u.query, flags=re.I)
+        else:
+            query = "action=view&" + u.query if u.query else "action=view"
+        return u._replace(query=query).geturl()
 
     @property
     def landing_url(self) -> str:
@@ -334,15 +366,41 @@ class BrowserSession:
 
     def sharepoint_window(self):
         """Switch to the SharePoint window, creating it when needed."""
-        if self.sp_window in self._handles():
+        handles = self._handles()
+        if self.sp_window in handles:
             self.driver.switch_to.window(self.sp_window)
         else:
+            # the window we were on may be the one the user just closed: start from one that is open
+            start = self.tool_window if self.tool_window in handles else (handles[0] if handles else None)
+            if start:
+                self.driver.switch_to.window(start)
             self.driver.switch_to.new_window("window")
             self.sp_window = self.driver.current_window_handle
         try:
             self.driver.switch_to.default_content()
         except Exception:
             pass
+
+    def tuck_sharepoint(self):
+        """Minimize the SharePoint window (current window): the user works in the tool window."""
+        try:
+            self.driver.minimize_window()
+        except Exception as exc:
+            self.log(f"SharePoint 창 최소화 실패(무시): {type(exc).__name__}: {str(exc)[:120]}")
+
+    def show_sharepoint(self):
+        """Bring the SharePoint window (current window) up, e.g. for the company login."""
+        try:
+            self.driver.maximize_window()
+            self.driver.switch_to.window(self.sp_window)
+        except Exception as exc:
+            self.log(f"SharePoint 창 보이기 실패(무시): {type(exc).__name__}: {str(exc)[:120]}")
+
+    def label_sharepoint(self):
+        try:
+            self.driver.execute_script(LABEL_JS, SP_TITLE, SP_NOTE)
+        except Exception as exc:
+            self.log(f"SharePoint 창 안내 표시 실패(무시): {type(exc).__name__}: {str(exc)[:120]}")
 
 
 # ---------------------------------------------------------------- SharePoint
@@ -356,6 +414,9 @@ class SharePoint:
         self.login_timeout = login_timeout
         self.etag: str | None = None  # ETag of the version last downloaded/uploaded
         self.info: dict = {}
+        self.last_ok = 0.0  # when the SharePoint page last worked; reloaded after a while (login, sleeping tabs)
+        self.sending = False  # the upload request may have reached SharePoint
+        self.keep_front = False  # leave the SharePoint window in front after this operation
 
     @property
     def driver(self):
@@ -371,21 +432,33 @@ class SharePoint:
         return path.endswith("/doc.aspx") or path.endswith("/doc2.aspx") or "/_layouts/15/xl" in path
 
     def _open_page(self):
-        """Be on a SharePoint page of the file's host, logged in (SSO, or the user logs in)."""
+        """Be on a SharePoint page of the file's host, logged in (SSO, or the user logs in).
+
+        The SharePoint window stays minimized; it comes up only while a login page waits for the user.
+        """
         self.session.sharepoint_window()
-        if self._on_site() and not self._on_workbook():
+        self.session.tuck_sharepoint()
+        if self._on_site() and not self._on_workbook() and time.time() - self.last_ok < 600:
             return
-        self.report("SharePoint 여는 중… (로그인 창이 나오면 회사 계정으로 로그인해 주세요)")
+        self.report("SharePoint 여는 중…")
         self.session._get(self.file.landing_url)
         end = time.time() + self.login_timeout
-        warned = False
+        login_since = None
+        shown = False
         while time.time() < end:
             url = self.session.current_url().lower()
             if any(w in url for w in LOGIN_HOSTS):
-                if not warned:
-                    self.report("SharePoint 로그인이 필요합니다. 열린 Edge 창에서 로그인해 주세요.")
-                    warned = True
+                login_since = login_since or time.time()
+                # company SSO usually passes by itself in a moment; show the window only if it waits for the user
+                if not shown and time.time() - login_since >= 3:
+                    self.session.show_sharepoint()
+                    self.report("SharePoint 로그인이 필요합니다. 앞에 뜬 SharePoint 창에서 회사 계정으로 로그인해 주세요.")
+                    shown = True
             elif self._on_site():
+                self.session.label_sharepoint()
+                if shown:
+                    self.session.tuck_sharepoint()
+                self.last_ok = time.time()
                 return
             time.sleep(1)
         raise SharePointError("SharePoint에 로그인하지 못했습니다 (시간 초과).", code="login")
@@ -404,6 +477,9 @@ class SharePoint:
         return res["data"] or {}
 
     def _done(self):
+        if self.keep_front:  # the uploaded file is on show in the SharePoint window: leave it in front
+            self.keep_front = False
+            return
         self.session.show_tool()
 
     def _poll(self, key: str, what: str, progress: bool) -> dict:
@@ -462,20 +538,39 @@ class SharePoint:
         return self._poll("__tcUpState", "SharePoint에 올리는 중", progress=False)
 
     # ---------------------------------------------------------- operations
-    def download(self) -> tuple[bytes, dict]:
+    def _again_if_window_closed(self, what: str, run):
+        """Run `run()`; if the SharePoint window was closed meanwhile, open it again and retry once."""
         with self.session.lock:
-            try:
-                self._open_page()
-                info = self._file_info()
-                self.report(f"SharePoint에서 받는 중… {info.get('Name', '')}")
-                t0 = time.time()
-                data = self._fetch_file("SharePoint에서 받는 중")
-                self.etag = info.get("ETag")
-                self.info = info
-                self.log(f"받기 성공 {len(data):,} bytes ({time.time() - t0:.0f}초), ETag {self.etag}")
-                return data, info
-            finally:
-                self._done()
+            for attempt in (1, 2):
+                self.sending = False
+                try:
+                    return run()
+                except Exception as exc:
+                    if not window_closed(exc):
+                        raise
+                    self.log(f"{what} 중 SharePoint 창이 닫힘 ({attempt}회째): {type(exc).__name__}: {str(exc)[:160]}")
+                    if self.sending:
+                        raise SharePointError("올리는 중에 SharePoint 창이 닫혀 중단됐습니다. '다시 올리기'를 눌러 주세요 "
+                                              "(이미 올라갔다면 '최신 파일로 다시 반영'이 나옵니다).", code="closed") from exc
+                    if attempt == 2:
+                        raise SharePointError("SharePoint 창이 닫혀 진행하지 못했습니다. 다시 눌러 주세요.", code="closed") from exc
+                    self.report("SharePoint 창이 닫혀 다시 여는 중…")
+                finally:
+                    self._done()
+
+    def download(self) -> tuple[bytes, dict]:
+        return self._again_if_window_closed("받기", self._download)
+
+    def _download(self) -> tuple[bytes, dict]:
+        self._open_page()
+        info = self._file_info()
+        self.report(f"SharePoint에서 받는 중… {info.get('Name', '')}")
+        t0 = time.time()
+        data = self._fetch_file("SharePoint에서 받는 중")
+        self.etag = info.get("ETag")
+        self.info = info
+        self.log(f"받기 성공 {len(data):,} bytes ({time.time() - t0:.0f}초), ETag {self.etag}")
+        return data, info
 
     def upload(self, data: bytes) -> dict:
         """Replace the SharePoint file with `data` if it has not changed since our download."""
@@ -483,45 +578,64 @@ class SharePoint:
             raise SharePointError("올릴 내용이 엑셀 파일이 아닙니다.")
         if not self.etag:
             raise SharePointError("먼저 'SharePoint에서 최신 파일 받기'로 받은 파일에 반영한 뒤 올려 주세요.", code="no_base")
-        with self.session.lock:
-            try:
-                self._open_page()
-                current = self._file_info()
-                if current.get("ETag") != self.etag:
-                    self.log(f"ETag 불일치: 받을 때 {self.etag}, 지금 {current.get('ETag')}")
-                    code, msg = explain(412)
-                    raise SharePointError(msg, 412, code)
-                self.report(f"SharePoint에 올리는 중… {current.get('Name', '')} ({len(data) / 1e6:.1f} MB)")
-                t0 = time.time()
-                res = self._send_file(data, self.etag)
-                if res.get("status") == 412:
-                    # some servers reject the file ETag in If-Match: re-check, then send without it
-                    again = self._file_info()
-                    if again.get("ETag") == self.etag:
-                        self.log("If-Match 거부 → ETag 재확인 후 다시 올림")
-                        res = self._send_file(data, "")
-                if not isinstance(res, dict) or not res.get("ok"):
-                    status = res.get("status") if isinstance(res, dict) else None
-                    self.log(f"올리기 실패: {res}")
-                    code, msg = explain(status, res.get("step", "") if isinstance(res, dict) else "")
-                    owner = lock_owner(res.get("text", "") if isinstance(res, dict) else "")
-                    if status == 423 and owner:
-                        msg = (f"{owner} 님이 이 파일을 Excel에서 열어 두어 SharePoint가 잠가 두었습니다. "
-                               "누군가 열어 둔 동안에는 파일째 바꿀 수 없으니, 아래 'Excel 웹 스크립트로 반영'을 쓰세요.")
-                    raise SharePointError(msg, status, code)
-                self.log(f"올리기 완료 ({time.time() - t0:.0f}초)")
-                after = self._file_info()
-                self.etag = after.get("ETag")
-                self.info = after
-                # read it back to confirm what SharePoint now holds (the upload already succeeded)
-                stored = b""
-                try:
-                    stored = self._fetch_file("올린 파일 확인 중")
-                except SharePointError as exc:
-                    self.log(f"올린 뒤 확인용 받기 실패(올리기는 성공): {exc}")
-                sheets = sheet_names(stored) if stored.startswith(b"PK") else []
-                self.log(f"올리기 성공: ETag {self.etag}, 시트 {sheets}")
-                return {"ok": True, "name": after.get("Name", ""), "etag": self.etag, "modified": after.get("TimeLastModified", ""),
-                        "sheets": sheets, "size": len(stored)}
-            finally:
-                self._done()
+        return self._again_if_window_closed("올리기", lambda: self._upload(data))
+
+    def _upload(self, data: bytes) -> dict:
+        self._open_page()
+        current = self._file_info()
+        if current.get("ETag") != self.etag:
+            self.log(f"ETag 불일치: 받을 때 {self.etag}, 지금 {current.get('ETag')}")
+            code, msg = explain(412)
+            raise SharePointError(msg, 412, code)
+        self.report(f"SharePoint에 올리는 중… {current.get('Name', '')} ({len(data) / 1e6:.1f} MB)")
+        t0 = time.time()
+        self.sending = True
+        res = self._send_file(data, self.etag)
+        if res.get("status") == 412:
+            # some servers reject the file ETag in If-Match: re-check, then send without it
+            again = self._file_info()
+            if again.get("ETag") == self.etag:
+                self.log("If-Match 거부 → ETag 재확인 후 다시 올림")
+                res = self._send_file(data, "")
+        if not isinstance(res, dict) or not res.get("ok"):
+            status = res.get("status") if isinstance(res, dict) else None
+            self.log(f"올리기 실패: {res}")
+            code, msg = explain(status, res.get("step", "") if isinstance(res, dict) else "")
+            owner = lock_owner(res.get("text", "") if isinstance(res, dict) else "")
+            if status == 423 and owner:
+                msg = (f"{owner} 님이 이 파일을 Excel에서 열어 두어 SharePoint가 잠가 두었습니다. "
+                       "누군가 열어 둔 동안에는 파일째 바꿀 수 없으니, 아래 'Excel 웹 스크립트로 반영'을 쓰세요.")
+            raise SharePointError(msg, status, code)
+        self.log(f"올리기 완료 ({time.time() - t0:.0f}초)")
+        self.sending = False
+        # the upload succeeded: what follows only confirms it, so its failures (e.g. a closed window) are not errors
+        after: dict = {}
+        stored = b""
+        try:
+            after = self._file_info()
+            stored = self._fetch_file("올린 파일 확인 중")  # read back what SharePoint now holds
+        except Exception as exc:
+            self.log(f"올린 뒤 확인 실패(올리기는 성공): {type(exc).__name__}: {str(exc)[:160]}")
+        self.etag = after.get("ETag")  # unknown → the next upload asks for a fresh download first
+        self.info = after
+        sheets = sheet_names(stored) if stored.startswith(b"PK") else []
+        self.log(f"올리기 성공: ETag {self.etag}, 시트 {sheets}")
+        opened = self._show_workbook()
+        return {"ok": True, "name": after.get("Name", "") or self.file.name, "etag": self.etag,
+                "modified": after.get("TimeLastModified", ""), "sheets": sheets, "size": len(stored), "opened": opened}
+
+    def _show_workbook(self) -> bool:
+        """After an upload, show the file in Excel for the web so the user can check it right away (2026-11-02 request).
+
+        View mode: edit mode would lock the file in the user's name and refuse the next upload (423). The next
+        download/upload leaves this page first (`_open_page`).
+        """
+        try:
+            self.report("올린 파일을 SharePoint 창에 엽니다 (보기 모드)…")
+            self.session._get(self.file.view_url)
+            self.session.show_sharepoint()
+            self.keep_front = True
+            return True
+        except Exception as exc:
+            self.log(f"올린 파일 열기 실패(무시): {type(exc).__name__}: {str(exc)[:160]}")
+            return False
