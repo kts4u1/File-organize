@@ -72,14 +72,17 @@
   }
 
   // ------------------------------------------------------------ excel
+  /** `bytes` may be a promise (still reading the file); photos chosen meanwhile wait for it. */
   function loadExcel(bytes, name, demo) {
     if (state.busy) {
       toast("사진을 읽는 중에는 엑셀을 바꿀 수 없습니다. 끝난 뒤 다시 선택하세요.", "bad");
       return Promise.resolve();
     }
-    // photos chosen while this runs wait for it (see processFiles)
-    state.loading = openExcel(bytes, name, demo).finally(() => { state.loading = null; });
-    return state.loading;
+    const loading = Promise.resolve(bytes)
+      .then((b) => openExcel(b, name, demo))
+      .finally(() => { if (state.loading === loading) state.loading = null; });
+    state.loading = loading;
+    return loading;
   }
 
   async function openExcel(bytes, name, demo) {
@@ -90,6 +93,7 @@
       state.demo = !!demo;
       state.jobs = [];
       state.result = null;
+      state.script = null;
       state.regions = null;
       state.picked = new Set(wb.records.filter((r) => !r.disposed).map((r) => r.key));
       renderAll();
@@ -274,6 +278,9 @@
     const btn = $("#apply");
     btn.textContent = $("#test-mode").checked ? `TEST 탭에 시험 반영 (${n}건)` : `엑셀 파일 만들기 (${n}건)`;
     btn.disabled = !n || state.busy;
+    const sb = $("#make-script");
+    sb.textContent = `Excel 웹 스크립트 만들기 (${n}건)`;
+    sb.disabled = !n || state.busy;
     $("#actions").hidden = !state.jobs.length;
     $("#clear").disabled = state.busy;
   }
@@ -340,6 +347,61 @@
       toast(`엑셀을 만들지 못했습니다: ${e.message}`, "bad");
       renderActions();
     }
+  }
+
+  // ------------------------------------------------------------ office script
+  function makeScript() {
+    const testMode = $("#test-mode").checked;
+    const script = TC.officeScript.build(state.jobs, testMode);
+    state.script = { ...script, testMode };
+    renderScript();
+    $("#script-panel").scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function renderScript() {
+    const box = $("#script-panel");
+    box.replaceChildren();
+    box.hidden = !state.script;
+    if (!state.script) return;
+    const { text, count, size, testMode } = state.script;
+    const area = h("textarea", { id: "script-text", readonly: true, "aria-label": "스크립트 내용" });
+    area.value = text;
+    const copy = async () => {
+      try {
+        await navigator.clipboard.writeText(text);
+        toast("스크립트를 복사했습니다. Excel 웹의 새 스크립트에 붙여넣으세요.", "good");
+      } catch (e) {
+        details.open = true;
+        area.focus();
+        area.select();
+        toast("자동 복사가 막혀 있어 내용을 선택해 두었습니다. Ctrl+C로 복사하세요.", "bad");
+      }
+    };
+    const save = async () => {
+      const r = await saveFile(new Blob([text], { type: "text/plain" }), `검교정_반영_스크립트_${todayIso()}.txt`);
+      toast(r.ok ? "스크립트 파일을 저장했습니다." : r.message, r.ok ? "good" : "bad");
+    };
+    const details = h("details", {}, h("summary", {}, "스크립트 직접 보기"), area);
+    box.append(
+      h("div", { class: "result-head" },
+        h("h3", {}, `Excel 웹에서 실행할 스크립트를 만들었습니다 (${count}건 · ${Math.ceil(size / 1024)} KB)`),
+        h("div", { class: "row-gap" },
+          h("button", { class: "primary", onclick: copy }, "스크립트 복사"),
+          h("button", { onclick: save }, ".txt로 저장"),
+          h("button", { onclick: () => { state.script = null; renderScript(); } }, "닫기"))),
+      h("p", { class: "muted" }, testMode
+        ? "지역 시트는 그대로 두고, 바뀔 행을 'TEST' 탭에 복사해 새 날짜와 사진을 넣습니다."
+        : "지역 시트의 해당 행에 새 날짜를 쓰고, 그 행의 교정필증·SMAX 사진을 바꿉니다."),
+      h("ol", {},
+        h("li", {}, "SharePoint에서 엑셀을 브라우저(Excel 웹)로 엽니다."),
+        h("li", {}, "위쪽 ", h("b", {}, "자동화"), " 탭 → ", h("b", {}, "새 스크립트"), "를 누릅니다."),
+        h("li", {}, "편집기 내용을 모두 지우고(", h("kbd", {}, "Ctrl+A"), ") 붙여넣은 뒤(", h("kbd", {}, "Ctrl+V"), ") ", h("b", {}, "실행"), "을 누릅니다."),
+        h("li", {}, "아래 출력에 '완료: ", String(count), "/", String(count), "건'이 나오면 끝입니다. 파일은 SharePoint에 바로 저장됩니다.")),
+      h("p", { class: "muted small" }, "자동화 탭이 보이지 않으면 회사 설정에서 Office Scripts가 꺼져 있는 것입니다. 그때는 '엑셀 파일 만들기'로 받은 파일을 SharePoint에 올려 주세요."),
+      size > 1.5 * 1024 * 1024
+        ? h("p", { class: "muted small", style: "color: var(--review)" }, "사진이 많아 스크립트가 큽니다. 붙여넣기가 느리거나 실패하면 사진을 10장 정도씩 나눠서 만드세요.")
+        : null,
+      details);
   }
 
   async function offerResult() {
@@ -526,10 +588,10 @@
   }
 
   function init() {
-    wireDrop($("#excel-drop"), $("#excel-input"), async (files) => {
+    wireDrop($("#excel-drop"), $("#excel-input"), (files) => {
       const f = files.find((x) => /\.xlsx$/i.test(x.name));
       if (!f) return toast("xlsx 파일을 선택하세요.", "bad");
-      await loadExcel(new Uint8Array(await f.arrayBuffer()), f.name, false);
+      return loadExcel(f.arrayBuffer().then((b) => new Uint8Array(b)), f.name, false);
     });
     wireDrop($("#photo-drop"), $("#photo-input"), (files) => {
       const imgs = files.filter((f) => /^image\//.test(f.type) || /\.(jpe?g|png|heic|heif|webp|bmp)$/i.test(f.name));
@@ -537,6 +599,7 @@
     });
     $("#demo").addEventListener("click", startDemo);
     $("#apply").addEventListener("click", applyJobs);
+    $("#make-script").addEventListener("click", makeScript);
     const testBox = $("#test-mode");
     try { testBox.checked = localStorage.getItem("tc-test-mode") === "1"; } catch (e) { /* storage unavailable */ }
     testBox.addEventListener("change", () => {

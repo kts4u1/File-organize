@@ -149,6 +149,12 @@
     padding: 12px 14px calc(12px + env(safe-area-inset-bottom, 0px)); background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
   }
 
+  /* office script */
+  #script-panel { background: var(--surface); border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: var(--radius); padding: 16px; display: grid; gap: 10px; }
+  #script-panel ol { margin: 0; padding-left: 20px; display: grid; gap: 4px; }
+  #script-panel kbd { font-family: var(--font-data); font-size: 12px; border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; background: var(--surface-2); }
+  #script-panel textarea { width: 100%; min-height: 160px; font-family: var(--font-data); font-size: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); color: var(--ink); }
+
   /* result */
   #result { background: var(--surface); border: 1px solid var(--line); border-left: 4px solid var(--ok); border-radius: var(--radius); padding: 16px; display: grid; gap: 10px; }
   .result-head { display: flex; flex-wrap: wrap; gap: 10px; justify-content: space-between; align-items: center; }
@@ -247,6 +253,7 @@
   <section role="tabpanel" id="panel-update" aria-labelledby="tab-update">
     <div class="row-gap"><div id="job-counts"></div><div id="progress" hidden></div></div>
     <div id="result" hidden></div>
+    <div id="script-panel" hidden></div>
     <div class="empty" id="jobs-empty">STEP 1에서 엑셀을, STEP 2에서 사진을 고르면 사진마다 찾은 툴과 날짜가 여기에 나옵니다. 확인한 뒤 엑셀 파일을 만듭니다.</div>
     <div class="jobs" id="jobs"></div>
     <div class="actions" id="actions" hidden>
@@ -254,6 +261,7 @@
       <label class="test-mode"><input type="checkbox" id="test-mode"> <span>원본 시트는 그대로 두고 <b>TEST</b> 탭에만 시험 반영</span></label>
       <div class="row-gap">
         <button type="button" id="clear">사진 모두 지우기</button>
+        <button type="button" id="make-script" disabled title="Excel 웹(SharePoint)에서 실행해 파일을 내려받지 않고 바로 반영">Excel 웹 스크립트 만들기</button>
         <button type="button" class="primary" id="apply" disabled>엑셀 파일 만들기 (0건)</button>
       </div>
     </div>
@@ -279,6 +287,7 @@
 <script src="js/match.js"></script>
 <script src="js/vision.js"></script>
 <script src="js/stickers.js"></script>
+<script src="js/officescript.js"></script>
 <script src="js/demo-data.js"></script>
 <script src="js/demo.js"></script>
 <script src="js/app.js"></script>
