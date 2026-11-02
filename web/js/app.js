@@ -474,8 +474,20 @@
     if (!desktop.on || !desktop.sharepoint) return null;
     const up = result.upload || {};
     if (result.source !== "sharepoint") {
-      return h("div", { class: "sp-box" }, h("p", { class: "muted" },
-        "SharePoint에 올리려면 위의 'SharePoint에서 최신 파일 받기'로 받은 파일에 반영해야 합니다 (그래야 다른 사람의 최신 수정이 지워지지 않습니다)."));
+      // only results built on a SharePoint download may go back (demo data or an old local copy must not)
+      const why = result.source === "demo"
+        ? "예시 엑셀로 만든 결과라 SharePoint에는 올리지 않습니다."
+        : "PC에 있던 엑셀로 만든 결과라 SharePoint에는 올리지 않습니다 (다른 사람의 최신 수정을 덮어쓸 수 있어서).";
+      const fetchLatest = () => {
+        state.result = null;
+        renderAll();
+        $("#excel-drop").scrollIntoView({ behavior: "smooth", block: "start" });
+        downloadFromSharePoint();
+      };
+      return h("div", { class: "sp-box" },
+        h("p", {}, why),
+        h("p", { class: "muted" }, "SharePoint에서 최신 파일을 받아 사진을 반영하면, 이 자리에 'SharePoint에 올리기' 버튼이 나옵니다."),
+        h("div", { class: "row-gap" }, h("button", { class: "primary", onclick: fetchLatest }, "SharePoint에서 최신 파일 받기")));
     }
     if (up.done) {
       return h("div", { class: "sp-box done" },
