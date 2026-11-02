@@ -300,6 +300,11 @@ class BrowserSession:
         except Exception:
             return False
 
+    def tool_open(self) -> bool:
+        """Is the tool window still open? (Waits while a download/upload holds the browser.)"""
+        with self.lock:
+            return self.driver is not None and self.tool_window is not None and self.tool_window in self._handles()
+
     def quit(self):
         with self.lock:
             if self.driver is not None:

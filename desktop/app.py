@@ -1,8 +1,8 @@
 """툴검교정.exe — the photo tool with SharePoint download/upload on the user's PC.
 
-Starts a local server for the browser tool, opens it in Edge (company SSO
-profile, like the FSN dashboard program), and keeps a small status window;
-closing that window ends the program.
+Starts a local server for the browser tool and opens it in Edge (company SSO
+profile, like the FSN dashboard program). There is no separate status window:
+the page shows the program's status, and closing the Edge window ends it.
 """
 
 from __future__ import annotations
@@ -11,10 +11,10 @@ import argparse
 import datetime as dt
 import json
 import os
-import queue
 import subprocess
 import sys
 import threading
+import time
 import traceback
 from pathlib import Path
 
@@ -72,7 +72,6 @@ def open_folder(path: Path):
 class Program:
     def __init__(self, args):
         self.args = args
-        self.messages: "queue.Queue[str]" = queue.Queue()
         cfg = load_config()
         url = args.sharepoint_url or cfg.get("sharepoint_url") or DEFAULT_SHAREPOINT_URL
         self.session = BrowserSession(PROFILE_DIR if not args.profile else Path(args.profile), self.report,
@@ -81,34 +80,49 @@ class Program:
             self.sharepoint = SharePoint(self.session, SharePointFile.parse(url), self.report, log)
         except SharePointError as exc:
             log(f"SharePoint 주소 오류: {exc}")
-            self.report(f"SharePoint 주소 오류: {exc}")
             self.sharepoint = None
-        self.server = ToolServer(resource_path("web"), OUTPUT_DIR, self.sharepoint, self.report, log, port=args.port)
+        self.server = ToolServer(resource_path("web"), OUTPUT_DIR, self.sharepoint, self.report, log, port=args.port,
+                                 folders={"output": OUTPUT_DIR, "logs": APP_DIR}, opener=open_folder)
+        self.error: Exception | None = None
 
     def report(self, msg: str):
+        """Status line: written to the log and shown in the tool page (no separate window)."""
         log(msg)
-        self.messages.put(msg)
         server = getattr(self, "server", None)
         if server is not None:
             server.note(msg)
 
-    def start(self):
+    def start(self, background: bool = True) -> bool:
         self.server.start()
         log(f"서버 시작 {self.server.url}")
-        self.open_tool()
+        if self.sharepoint is None:
+            self.report("SharePoint 주소가 잘못되어 받기·올리기를 쓸 수 없습니다. config.json의 sharepoint_url을 확인하세요.")
+        if background:
+            threading.Thread(target=self.open_tool, daemon=True).start()
+            return True
+        return self.open_tool()
 
-    def open_tool(self):
-        def run():
-            try:
-                if not self.session.alive():
-                    self.session.quit()
-                    self.session.start()
-                self.session.open_tool(self.server.url)
-                self.report("도구 화면을 열었습니다. Edge 창에서 사용하세요.")
-            except Exception as exc:
-                log("Edge 열기 실패\n" + traceback.format_exc())
-                self.report(f"Edge를 열지 못했습니다: {exc}")
-        threading.Thread(target=run, daemon=True).start()
+    def open_tool(self) -> bool:
+        try:
+            if not self.session.alive():
+                self.session.quit()
+                self.session.start()
+            self.session.open_tool(self.server.url)
+            self.report("도구 화면을 열었습니다. 이 창을 닫으면 프로그램이 끝납니다.")
+            return True
+        except Exception as exc:
+            log("Edge 열기 실패\n" + traceback.format_exc())
+            self.report(f"Edge를 열지 못했습니다: {exc}")
+            self.error = exc
+            return False
+
+    def wait_until_closed(self, interval: float = 2.0):
+        """Return once the tool window is closed (or Edge is gone): that ends the program."""
+        misses = 0
+        while misses < 2:  # two checks in a row, so one odd answer does not end the program
+            time.sleep(interval)
+            misses = 0 if self.session.tool_open() else misses + 1
+        log("도구 창이 닫혀 종료합니다.")
 
     def stop(self):
         self.session.quit()
@@ -117,52 +131,33 @@ class Program:
         except Exception:
             pass
 
-    # ------------------------------------------------------------ window
-    def run_gui(self):
+    def run(self) -> int:
+        """One window: the tool page in Edge shows the status; closing it ends the program."""
+        if not self.start(background=False):
+            self.stop()
+            show_error(f"Edge를 열지 못했습니다:\n{self.error}\n\n로그: {LOG_PATH}", self.args)
+            return 1
+        if self.args.no_gui:
+            print(self.server.url, flush=True)
+        self.wait_until_closed()
+        self.stop()
+        return 0
+
+
+def show_error(text: str, args=None):
+    if args is not None and args.no_gui:
+        print(text, file=sys.stderr)
+        return
+    try:
         import tkinter as tk
         from tkinter import messagebox
 
         root = tk.Tk()
-        root.title("툴 검교정")
-        root.geometry("520x300")
-        try:
-            root.iconbitmap(str(resource_path("desktop", "toolcal.ico")))
-        except Exception:
-            pass
-        tk.Label(root, text="툴 검교정 정리", font=("Malgun Gothic", 14, "bold")).pack(anchor="w", padx=14, pady=(12, 0))
-        tk.Label(root, text="Edge 창에서 사진을 반영하고 SharePoint에 올립니다. 이 창을 닫으면 종료됩니다.",
-                 font=("Malgun Gothic", 9), fg="#555").pack(anchor="w", padx=14)
-        box = tk.Text(root, height=8, font=("Malgun Gothic", 9), relief="flat", bg="#f4f5f3", wrap="word")
-        box.pack(fill="both", expand=True, padx=14, pady=8)
-        box.configure(state="disabled")
-        bar = tk.Frame(root)
-        bar.pack(fill="x", padx=14, pady=(0, 12))
-        for text, cmd in (("도구 화면 열기", self.open_tool), ("저장 폴더", lambda: open_folder(OUTPUT_DIR)),
-                          ("로그 폴더", lambda: open_folder(APP_DIR)), ("종료", root.destroy)):
-            tk.Button(bar, text=text, command=cmd, font=("Malgun Gothic", 9)).pack(side="left", padx=(0, 6))
-
-        def pump():
-            while True:
-                try:
-                    msg = self.messages.get_nowait()
-                except queue.Empty:
-                    break
-                box.configure(state="normal")
-                box.insert("end", f"{dt.datetime.now():%H:%M:%S}  {msg}\n")
-                box.see("end")
-                box.configure(state="disabled")
-            root.after(300, pump)
-
-        try:
-            self.start()
-        except Exception as exc:
-            log("시작 실패\n" + traceback.format_exc())
-            messagebox.showerror("툴 검교정", f"시작하지 못했습니다:\n{exc}\n\n로그: {LOG_PATH}")
-            return 1
-        pump()
-        root.mainloop()
-        self.stop()
-        return 0
+        root.withdraw()
+        messagebox.showerror("툴 검교정", text, parent=root)
+        root.destroy()
+    except Exception:
+        pass
 
 
 def parse_args(argv=None):
@@ -173,7 +168,7 @@ def parse_args(argv=None):
     p.add_argument("--profile", help="브라우저 프로필 폴더 (테스트용)")
     p.add_argument("--headless", action="store_true", help="화면 없이 실행 (테스트용)")
     p.add_argument("--port", type=int, default=0)
-    p.add_argument("--no-gui", action="store_true", help="상태 창 없이 서버와 브라우저만 (테스트용)")
+    p.add_argument("--no-gui", action="store_true", help="오류 창 대신 콘솔에 출력하고 주소를 출력 (테스트용)")
     return p.parse_args(argv)
 
 
@@ -182,19 +177,8 @@ def main(argv=None) -> int:
     APP_DIR.mkdir(parents=True, exist_ok=True)
     log("=== 시작 ===")
     try:
-        program = Program(args)
-        if args.no_gui:
-            program.start()
-            print(program.server.url, flush=True)
-            threading.Event().wait()
-            return 0
-        return program.run_gui()
+        return Program(args).run()
     except Exception as exc:
         log("치명적 오류\n" + traceback.format_exc())
-        if not args.no_gui:
-            try:
-                from tkinter import messagebox
-                messagebox.showerror("툴 검교정", f"오류가 났습니다:\n{exc}\n\n로그: {LOG_PATH}")
-            except Exception:
-                pass
+        show_error(f"오류가 났습니다:\n{exc}\n\n로그: {LOG_PATH}", args)
         return 1

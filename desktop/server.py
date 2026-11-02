@@ -4,10 +4,11 @@ Serves the browser tool (web/) with its libraries from disk, and gives the
 page three endpoints the browser cannot do on its own:
 
   GET  /api/status       → whether SharePoint is configured
-  GET  /api/progress     → the latest status line (download/upload progress)
+  GET  /api/progress     → the latest status line and the recent ones (the program's status log)
   POST /api/sp/download  → the latest Excel from SharePoint (via Edge login)
   POST /api/sp/upload    → put the updated Excel back on SharePoint
   POST /api/save         → keep a copy in ~/ToolCal/output
+  POST /api/open?what=   → open the output or log folder in Explorer
 
 Only 127.0.0.1 is bound, and every /api call must carry the per-run token
 that is written into the served page, so other websites cannot use it.
@@ -15,6 +16,7 @@ that is written into the served page, so other websites cannot use it.
 
 from __future__ import annotations
 
+import collections
 import json
 import mimetypes
 import secrets
@@ -50,7 +52,7 @@ MAX_UPLOAD = 1024 * 1024 * 1024
 
 class ToolServer:
     def __init__(self, web_dir: Path, output_dir: Path, sharepoint: SharePoint | None,
-                 report=print, log=lambda m: None, port: int = 0):
+                 report=print, log=lambda m: None, port: int = 0, folders: dict | None = None, opener=None):
         self.web_dir = Path(web_dir).resolve()
         self.output_dir = Path(output_dir)
         self.sharepoint = sharepoint
@@ -58,6 +60,10 @@ class ToolServer:
         self.log = log
         self.token = secrets.token_urlsafe(24)
         self.last_message = ""
+        self.lines: collections.deque = collections.deque(maxlen=100)  # status log shown on the page
+        self.seq = 0
+        self.folders = {k: Path(v) for k, v in (folders or {}).items()}
+        self.opener = opener
         self.httpd = ThreadingHTTPServer(("127.0.0.1", port), self._handler())
         self.httpd.daemon_threads = True
         self.thread: threading.Thread | None = None
@@ -76,8 +82,19 @@ class ToolServer:
         self.httpd.server_close()
 
     def note(self, msg: str):
-        """Remember the latest status line for the page (GET /api/progress)."""
+        """Remember a status line for the page (GET /api/progress).
+
+        Progress updates of the same step ("SharePoint에서 받는 중… 2.6 / 10.7 MB") replace each other
+        in the log, so a long transfer stays one line.
+        """
         self.last_message = msg
+        key = msg.split("…", 1)[0] if "…" in msg else None
+        line = {"t": time.strftime("%H:%M:%S"), "m": msg, "k": key}
+        if key and self.lines and self.lines[-1]["k"] == key:
+            self.lines[-1] = line
+        else:
+            self.lines.append(line)
+        self.seq += 1
 
     # ------------------------------------------------------------ pages
     def index_html(self) -> bytes:
@@ -147,7 +164,8 @@ class ToolServer:
                 if path == "/api/progress":
                     if not self._authorized():
                         return
-                    return self._json(200, {"ok": True, "message": server.last_message})
+                    return self._json(200, {"ok": True, "message": server.last_message, "seq": server.seq,
+                                            "log": [{"t": x["t"], "m": x["m"]} for x in list(server.lines)]})
                 target = server.static_path(path)
                 if target is None:
                     return self._send(404, b"not found", "text/plain")
@@ -180,6 +198,13 @@ class ToolServer:
                         result = server.sharepoint.upload(data)
                         server.report(f"SharePoint에 올림: {result.get('name')}")
                         return self._json(200, result)
+                    if url.path == "/api/open":
+                        what = (parse_qs(url.query).get("what") or [""])[0]
+                        folder = server.folders.get(what)
+                        if folder is None or server.opener is None:
+                            return self._json(404, {"ok": False, "message": "없는 폴더입니다."})
+                        server.opener(folder)
+                        return self._json(200, {"ok": True, "path": str(folder)})
                     if url.path == "/api/save":
                         name = (parse_qs(url.query).get("name") or ["Tool_Verification.xlsx"])[0]
                         target = server.save_copy(name, self._body())

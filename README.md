@@ -30,7 +30,8 @@ SMAX 화면 캡쳐를 같이 올리면 `SMAX Tool Photo` 칸도 교체합니다.
 2. 압축 풀기 → `build.bat` 더블클릭 → `dist\툴검교정.exe` 생성 (1~2분)
 
 **사용** — 사진만 넣고 버튼 하나
-1. `툴검교정.exe` 실행 → 작은 상태 창과 Edge 창(도구 화면)이 열리고, **SharePoint에서 최신 파일을 자동으로 받습니다**
+1. `툴검교정.exe` 실행 → Edge 창(도구 화면) 하나가 열리고, **SharePoint에서 최신 파일을 자동으로 받습니다**
+   (진행 상황은 화면 오른쪽 위 **프로그램 상태**에 나옵니다)
    (처음엔 로그인 창이 뜰 수 있음 → 회사 계정으로 로그인. 약 200 MB라 1~2분, 받은 양이 화면에 표시됨).
 2. STEP 2에 사진 → 카드 확인(받는 중에 사진을 넣어도 됨, 다 받으면 읽기 시작)
 3. **SharePoint에 반영 (N건)** → 엑셀을 만들어 바로 SharePoint에 올립니다. 끝나면 "SharePoint에 올렸습니다"와 지금 시트 목록이 나옵니다.
@@ -51,8 +52,8 @@ SMAX 화면 캡쳐를 같이 올리면 `SMAX Tool Photo` 칸도 교체합니다.
 **설정·문제 해결**
 - 다른 엑셀을 쓰려면 `%USERPROFILE%\ToolCal\config.json`에 `{"sharepoint_url": "SharePoint 엑셀 주소"}`
   (엑셀 웹에서 주소창의 `…/_layouts/15/Doc.aspx?…sourcedoc=…` 주소)
-- 기록: `%USERPROFILE%\ToolCal\debug_log.txt` (상태 창의 [로그 폴더])
-- Edge 창을 닫았으면 상태 창의 [도구 화면 열기], 끝낼 때는 상태 창을 닫습니다.
+- 기록: `%USERPROFILE%\ToolCal\debug_log.txt` (화면 오른쪽 위 [로그 폴더]), PC 사본은 [저장 폴더]
+- 도구 화면(Edge 창)을 닫으면 프로그램이 끝납니다. 다시 쓰려면 `툴검교정.exe`를 다시 실행하세요.
 
 ---
 

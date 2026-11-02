@@ -20,6 +20,9 @@ Cal Last / Cal Next와 Label Photo / SMAX Tool Photo를 고치는 도구입니�
    진행은 `/api/progress`로 표시) → 사진 → 버튼 하나 `SharePoint에 반영 (N건)` = 엑셀 만들기 + PC 사본 저장 + 올리기.
    412(그 사이 다른 사람 저장)면 `최신 파일로 다시 반영`(같은 사진을 최신본에 다시 반영). TEST 탭 시험 반영 기능은 화면에서 뺐음
    (`xlsx.js`의 TEST 시트 함수는 남아 있음, 안 씀).
+   창은 Edge 하나(2026-11-02 사용자 요청 "창 2개를 하나로"): 예전 Tk 상태 창 없음. 상태 기록은 페이지 오른쪽 위 '프로그램 상태'
+   (`/api/progress`의 `log`, 같은 단계의 진행 줄은 한 줄로 갱신), 저장/로그 폴더 버튼(`/api/open`), 도구 창을 닫으면 종료
+   (`Program.wait_until_closed`, 테스트 `test_program_ends_when_the_tool_window_is_closed`). 오류로 Edge를 못 열 때만 Tk 메시지 상자.
 3. `app.py`, `toolcal/` — 처음 만든 Python(Streamlit) 버전. Claude API 선택 사항. 지금은 1·2가 주력.
 
 ## SharePoint
@@ -50,8 +53,11 @@ Cal Last / Cal Next와 Label Photo / SMAX Tool Photo를 고치는 도구입니�
 - 같은 날 새 빌드로 올리기 성공(사용자 확인: SharePoint에 TEST 탭이 생김). 그 뒤 TEST 기능 제거·자동 받기·바로 올리기로 변경.
   SharePoint에 남은 TEST 탭은 사용자가 직접 지우면 됨(프로그램은 건드리지 않음).
 
+- 같은 날 저녁: 자동 받기 + `SharePoint에 반영` 한 번에 올리기 성공(사용자 화면 확인). 이때 받은 파일은 10.7 MB(전엔 207.8 MB),
+  시트 `Calweb등록필요`가 새로 생김 — 그 사이 누가 Excel에서 정리·저장한 것으로 보임.
+
 ## 열린 항목 (2026-11-02)
-- 자동 받기 + `SharePoint에 반영` 한 번에 올리기 — 새 빌드로 실제 확인 필요.
+- 창 하나(상태 창 제거, Edge 창 닫으면 종료) — 새 빌드로 실제 확인 필요.
 - 다른 사람이 실제로 열어 둔 경우엔 Office Script(Excel 웹 자동화 탭) 경로 — 실제 실행 결과 미확인.
 - Office Script 첫 실제 실행 결과 확인.
 - 손글씨 시리얼 인식률은 휴대폰 원본 해상도 사진으로 다시 확인. 확실하게 하려면 QR 스티커 사용 권장.

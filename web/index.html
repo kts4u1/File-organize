@@ -41,6 +41,7 @@
   }
 
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   body {
     background: var(--bg); color: var(--ink); font-family: var(--font-ui); font-size: 15px; line-height: 1.55;
     padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
@@ -77,6 +78,17 @@
   h1 { font-size: clamp(26px, 4vw, 34px); font-weight: 700; letter-spacing: -0.01em; }
   .lede { margin: 0; color: var(--muted); max-width: 62ch; }
   .privacy { font-size: 13px; color: var(--muted); max-width: 34ch; }
+  /* PC program only: its status log (there is no separate status window) */
+  .program { flex: 0 1 460px; min-width: 0; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px; display: grid; gap: 6px; }
+  .program-head { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; }
+  .program-head strong { font-size: 14px; }
+  .program-head .muted { font-size: 12px; flex: 1 1 auto; }
+  .program-head button { padding: 3px 10px; font-size: 13px; }
+  .program-log { list-style: none; margin: 0; padding: 6px 8px; background: var(--surface-2); border-radius: 6px; font-size: 12.5px; line-height: 1.45;
+    height: 9.4em; overflow-y: auto; overflow-wrap: anywhere; }
+  .program-log li { display: flex; gap: 8px; }
+  .program-log time { font-family: var(--font-data); color: var(--muted); flex: none; }
+  .program-log li.bad { color: var(--error); }
 
   /* inputs */
   .inputs { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }
@@ -226,7 +238,16 @@
       <h1>툴 검교정 정리</h1>
       <p class="lede">검교정 후 찍은 툴 사진에서 시리얼과 교정필증 날짜를 읽어, Tool Verification 엑셀의 해당 엔지니어 행에 날짜를 고치고 교정필증 사진을 넣습니다.</p>
     </div>
-    <p class="privacy">파일과 사진은 이 브라우저 안에서만 처리합니다. API 키나 서버가 필요 없습니다.</p>
+    <p class="privacy" id="privacy">파일과 사진은 이 브라우저 안에서만 처리합니다. API 키나 서버가 필요 없습니다.</p>
+    <section class="program" id="program" aria-label="프로그램 상태" hidden>
+      <div class="program-head">
+        <strong>프로그램 상태</strong>
+        <span class="muted">이 창을 닫으면 프로그램이 끝납니다</span>
+        <button type="button" id="open-output">저장 폴더</button>
+        <button type="button" id="open-logs">로그 폴더</button>
+      </div>
+      <ol class="program-log" id="program-log" aria-live="polite"></ol>
+    </section>
   </header>
 
   <section class="inputs" aria-label="파일 선택">

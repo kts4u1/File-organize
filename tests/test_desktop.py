@@ -75,7 +75,10 @@ class FakeSharePoint:
 def server(workbook_path, tmp_path):
     with open(workbook_path, "rb") as fh:
         fake = FakeSharePoint(fh.read())
-    srv = ToolServer(WEB, tmp_path / "out", fake).start()
+    opened = []
+    srv = ToolServer(WEB, tmp_path / "out", fake, folders={"output": tmp_path / "out", "logs": tmp_path},
+                     opener=opened.append).start()
+    srv.opened = opened
     yield srv, fake
     srv.stop()
 
@@ -114,6 +117,29 @@ def test_api_needs_token(server):
     assert _req(srv, "/api/progress", token=False)[0] == 403
     srv.note("SharePoint에서 받는 중… 12.0 / 207.8 MB")
     assert json.loads(_req(srv, "/api/progress")[2])["message"].endswith("207.8 MB")
+
+
+def test_status_log_for_the_page(server):
+    """The exe has no status window of its own; the page shows these lines (2026-11-02 "창 2개를 하나로")."""
+    srv, _ = server
+    srv.note("Edge 브라우저를 여는 중…")
+    srv.note("SharePoint에서 받는 중… Tool list for Field validation 20250325.xlsx")
+    srv.note("SharePoint에서 받는 중… 2.6 / 10.7 MB")
+    srv.note("SharePoint에서 받음: Tool list for Field validation 20250325.xlsx")
+    body = json.loads(_req(srv, "/api/progress")[2])
+    lines = [x["m"] for x in body["log"]]
+    assert lines == ["Edge 브라우저를 여는 중…", "SharePoint에서 받는 중… 2.6 / 10.7 MB",
+                     "SharePoint에서 받음: Tool list for Field validation 20250325.xlsx"]  # progress kept to one line
+    assert body["seq"] == 4 and all(len(x["t"]) == 8 for x in body["log"])
+
+
+def test_open_folders(server, tmp_path):
+    srv, _ = server
+    assert _req(srv, "/api/open?what=output", method="POST", token=False)[0] == 403
+    status, _, body = _req(srv, "/api/open?what=output", method="POST")
+    assert status == 200 and srv.opened == [tmp_path / "out"]
+    assert _req(srv, "/api/open?what=logs", method="POST")[0] == 200 and srv.opened[-1] == tmp_path
+    assert _req(srv, "/api/open?what=C:%5CWindows", method="POST")[0] == 404 and len(srv.opened) == 2
 
 
 def test_download_upload_and_save(server):
@@ -246,5 +272,60 @@ def test_program_never_opens_the_workbook_itself(browser_env, tmp_path):
         assert sp.upload(data)["ok"]
     finally:
         session.quit()
+        mock.stop()
+        shutil.rmtree(tmp_path / "profile", ignore_errors=True)
+
+
+def test_program_ends_when_the_tool_window_is_closed(browser_env, tmp_path, monkeypatch):
+    """One window (2026-11-02): the page shows the status log, and closing it ends the program."""
+    import threading
+    import time
+
+    from desktop import app as desk
+
+    monkeypatch.setattr(desk, "APP_DIR", tmp_path / "home")
+    monkeypatch.setattr(desk, "LOG_PATH", tmp_path / "home" / "debug_log.txt")
+    monkeypatch.setattr(desk, "OUTPUT_DIR", tmp_path / "home" / "output")
+    path = build_workbook(tmp_path / "w.xlsx", with_pictures=False)
+    with open(path, "rb") as fh:
+        mock = MockSharePoint(fh.read()).start()
+    args = desk.parse_args(["--browser", "chrome", "--binary", CHROMIUM, "--headless", "--no-gui",
+                            "--sharepoint-url", mock.page_url, "--profile", str(tmp_path / "profile")])
+    program = desk.Program(args)
+    # Headless Chromium sometimes takes 15 s to close the very first window of the browser, even an empty one,
+    # so the tool page goes into a second window here. (A real Edge window closed with X is not affected.)
+    program.session.start()
+    program.session.driver.switch_to.new_window("window")
+    result = []
+    runner = threading.Thread(target=lambda: result.append(program.run()), daemon=True)
+    try:
+        runner.start()
+        session = program.session
+
+        def page_log():
+            with session.lock:
+                if session.tool_window is None:
+                    return ""
+                session.driver.switch_to.window(session.tool_window)
+                return session.driver.execute_script(
+                    "const e = document.getElementById('program-log'); return e && !document.getElementById('program').hidden"
+                    " ? e.innerText : ''") or ""
+
+        end = time.time() + 60
+        while "SharePoint에서 받음" not in page_log():  # the page downloads by itself and shows the log
+            assert time.time() < end, page_log()
+            time.sleep(0.5)
+        assert "도구 화면을 열었습니다" in page_log()
+        assert runner.is_alive()
+
+        with session.lock:  # the user closes the tool window; the SharePoint window is still open
+            assert session.sp_window in session.driver.window_handles
+            session.driver.switch_to.window(session.tool_window)
+            session.driver.close()
+        runner.join(20)
+        assert not runner.is_alive() and result == [0]
+        assert session.driver is None  # Edge (with the SharePoint window) was closed too
+    finally:
+        program.stop()
         mock.stop()
         shutil.rmtree(tmp_path / "profile", ignore_errors=True)

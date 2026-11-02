@@ -462,6 +462,44 @@
     else toast(r.message, "bad");
   }
 
+  // ------------------------------------------------------------ program status (desktop only)
+  // The exe has no window of its own: its status lines are shown here.
+  let logSeq = -1;
+  let logFailures = 0;
+  async function refreshProgramLog() {
+    const p = await apiJson("/api/progress").catch(() => null);
+    const list = $("#program-log");
+    if (!p || !p.ok) {
+      if (++logFailures === 3) {
+        list.append(h("li", { class: "bad" }, h("time", {}, "--:--:--"),
+          h("span", {}, "프로그램과 연결이 끊겼습니다. 툴검교정.exe를 다시 실행해 주세요.")));
+        list.scrollTop = list.scrollHeight;
+      }
+      return;
+    }
+    logFailures = 0;
+    if (p.seq === logSeq) return;
+    logSeq = p.seq;
+    const atEnd = list.scrollTop + list.clientHeight >= list.scrollHeight - 4;
+    list.replaceChildren(...(p.log || []).map((l) =>
+      h("li", { class: /못했|실패|오류|거절/.test(l.m) ? "bad" : null }, h("time", {}, l.t), h("span", {}, l.m))));
+    if (atEnd) list.scrollTop = list.scrollHeight;
+  }
+
+  async function openFolder(what) {
+    const r = await apiJson(`/api/open?what=${what}`, { method: "POST" }).catch(() => null);
+    if (!r || !r.ok) toast((r && r.message) || "폴더를 열지 못했습니다.", "bad");
+  }
+
+  function startProgramPanel() {
+    $("#privacy").hidden = true;
+    $("#program").hidden = false;
+    $("#open-output").addEventListener("click", () => openFolder("output"));
+    $("#open-logs").addEventListener("click", () => openFolder("logs"));
+    refreshProgramLog();
+    setInterval(refreshProgramLog, 1500);
+  }
+
   // ------------------------------------------------------------ SharePoint (desktop only)
   /** Show the exe's latest status line (e.g. "SharePoint에서 받는 중… 45.2 / 207.8 MB") while `promise` runs. */
   function followProgress(promise, show) {
@@ -815,6 +853,7 @@
     showTab(["update", "status", "stickers"].includes(tab) ? tab : "update");
     renderAll();
     if (desktop.on) {
+      startProgramPanel();
       apiJson("/api/status").then((st) => {
         desktop.sharepoint = !!st.sharepoint;
         desktop.name = st.name || "";
