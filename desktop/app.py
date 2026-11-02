@@ -88,6 +88,9 @@ class Program:
     def report(self, msg: str):
         log(msg)
         self.messages.put(msg)
+        server = getattr(self, "server", None)
+        if server is not None:
+            server.note(msg)
 
     def start(self):
         self.server.start()

@@ -38,6 +38,8 @@
     for (const c of children.flat()) if (c != null && c !== false) el.append(c.nodeType ? c : String(c));
     return el;
   }
+  /** append() that leaves out optional parts given as null/false (plain append would print "null"). */
+  const put = (el, ...parts) => el.append(...parts.flat().filter((p) => p != null && p !== false));
 
   // ------------------------------------------------------------ desktop program (툴검교정.exe)
   // The exe serves this page from 127.0.0.1 with a per-run token; SharePoint
@@ -137,7 +139,11 @@
 
   // ------------------------------------------------------------ photos
   async function processFiles(files) {
-    if (state.loading) await state.loading;
+    if (state.loading) {
+      setProgress("SharePoint 파일을 받는 중입니다. 다 받으면 사진을 읽습니다…");
+      await state.loading;
+      setProgress("");
+    }
     if (!state.wb) {
       toast("Tool Verification 엑셀 파일을 먼저 선택하세요.", "bad");
       return;
@@ -294,12 +300,18 @@
     renderActions();
   }
 
+  /** In the exe, a workbook downloaded from SharePoint is uploaded back right after it is built. */
+  function uploadsDirectly() {
+    return desktop.on && desktop.sharepoint && state.excel?.source === "sharepoint";
+  }
+
   function renderActions() {
     const n = state.jobs.filter(M.applicable).length;
     const btn = $("#apply");
-    btn.textContent = $("#test-mode").checked ? `TEST 탭에 시험 반영 (${n}건)` : `엑셀 파일 만들기 (${n}건)`;
-    btn.disabled = !n || state.busy;
+    btn.textContent = uploadsDirectly() ? `SharePoint에 반영 (${n}건)` : `엑셀 파일 만들기 (${n}건)`;
+    btn.disabled = !n || state.busy || !!state.loading;
     const sb = $("#make-script");
+    sb.hidden = desktop.on; // the exe offers the script only when SharePoint refuses the upload (locked)
     sb.textContent = `Excel 웹 스크립트 만들기 (${n}건)`;
     sb.disabled = !n || state.busy;
     $("#actions").hidden = !state.jobs.length;
@@ -315,55 +327,59 @@
 
   async function applyJobs() {
     const btn = $("#apply");
-    const testMode = $("#test-mode").checked;
     btn.disabled = true;
     btn.textContent = "엑셀 만드는 중…";
     try {
       const wb = await ToolWorkbook.open(state.excel.bytes.slice(0), state.excel.name);
       const changes = [];
+      const missing = [];
       const today = todayIso();
-      const testRows = new Map(); // one TEST row per tool, even with a photo and a SMAX capture
+      const norm = M.normalizeSerial;
       for (const job of state.jobs) {
         if (!M.applicable(job)) continue;
-        const rec = wb.findRecord(job.target.sheet, job.target.row);
-        if (!rec || M.normalizeSerial(rec.serial) !== M.normalizeSerial(job.target.serial)) continue;
-        const before = { calLast: rec.calLast, calNext: rec.calNext };
-        // In test mode the original row is copied to the TEST tab and only the copy is changed.
-        let dest = rec;
-        if (testMode) {
-          if (!testRows.has(rec.key)) testRows.set(rec.key, await wb.appendTestRow(rec, `원본: ${rec.sheet} ${rec.row}행 · ${today} 시험 반영`));
-          dest = testRows.get(rec.key);
+        // the row may have moved if rows were added meanwhile: find the tool again by serial
+        let rec = wb.findRecord(job.target.sheet, job.target.row);
+        if (!rec || norm(rec.serial) !== norm(job.target.serial)) {
+          rec = wb.records.find((r) => r.sheet === job.target.sheet && norm(r.serial) === norm(job.target.serial)) || null;
         }
-        const columns = wb._info(dest.sheet).columns;
+        if (!rec) {
+          missing.push(job);
+          continue;
+        }
+        const before = { calLast: rec.calLast, calNext: rec.calNext };
         const notes = [];
         let replaced = 0;
+        const columns = wb.sheets.get(rec.sheet).columns;
         if (job.kind === "tool_photo") {
           for (const [key, value] of [["cal_last", job.calLast], ["cal_next", job.calNext]]) {
-            if ((await wb.writeDate(dest, key, value)) === "formula") notes.push(`${key === "cal_next" ? "Cal Next" : "Cal Last"} 열은 수식이라 그대로 두었습니다.`);
+            if ((await wb.writeDate(rec, key, value)) === "formula") notes.push(`${key === "cal_next" ? "Cal Next" : "Cal Last"} 열은 수식이라 그대로 두었습니다.`);
           }
           if (columns.label_photo) {
             const pic = await canvasBytes(job.labelCrop || job.image, "image/jpeg", 1000, 0.85);
-            replaced = await wb.replacePicture(dest, "label_photo", pic.bytes, "jpeg", pic.size, `Label ${rec.serial}`, `${job.fileName} (${today})`);
+            replaced = await wb.replacePicture(rec, "label_photo", pic.bytes, "jpeg", pic.size, `Label ${rec.serial}`, `${job.fileName} (${today})`);
           }
         } else if (columns.smax_photo) {
           const pic = await canvasBytes(job.image, "image/png", 1600);
-          replaced = await wb.replacePicture(dest, "smax_photo", pic.bytes, "png", pic.size, `SMAX ${rec.serial}`, `${job.fileName} (${today})`);
+          replaced = await wb.replacePicture(rec, "smax_photo", pic.bytes, "png", pic.size, `SMAX ${rec.serial}`, `${job.fileName} (${today})`);
         }
-        changes.push({
-          job, rec, dest, before, replaced, notes,
-          after: { calLast: job.kind === "tool_photo" ? job.calLast : before.calLast, calNext: job.kind === "tool_photo" ? job.calNext : before.calNext },
-        });
+        changes.push({ job, rec, before, replaced, notes, after: { calLast: rec.calLast, calNext: rec.calNext } });
+      }
+      if (!changes.length) {
+        toast("엑셀에서 대상 툴을 찾지 못해 반영할 것이 없습니다.", "bad");
+        renderActions();
+        return;
       }
       const blob = await wb.toBlob();
       const bytes = new Uint8Array(await blob.arrayBuffer());
-      state.result = { blob, changes, name: state.excel.name, source: state.excel.source, testMode,
-                       testSheet: testMode && wb.testInfo ? wb.testInfo.name : null, upload: null };
+      const direct = uploadsDirectly();
+      state.result = { blob, changes, missing, name: state.excel.name, source: state.excel.source, testMode: false, upload: null };
       // the updated file becomes the working copy for the next batch
       state.excel = { bytes, name: state.excel.name, source: state.excel.source };
       state.wb = await ToolWorkbook.open(bytes.slice(0), state.excel.name);
       state.jobs = [];
       renderAll();
-      await offerResult();
+      await offerResult(); // keeps a copy (in the exe: %USERPROFILE%\ToolCal\output)
+      if (direct) await uploadToSharePoint();
     } catch (e) {
       console.error(e);
       toast(`엑셀을 만들지 못했습니다: ${e.message}`, "bad");
@@ -373,7 +389,7 @@
 
   // ------------------------------------------------------------ office script
   function makeScript() {
-    showScript(state.jobs, $("#test-mode").checked);
+    showScript(state.jobs, false);
   }
 
   function showScript(jobs, testMode) {
@@ -447,37 +463,88 @@
   }
 
   // ------------------------------------------------------------ SharePoint (desktop only)
-  async function downloadFromSharePoint() {
-    const btn = $("#sp-download");
-    btn.disabled = true;
-    btn.textContent = "SharePoint에서 받는 중… (로그인 창이 뜨면 로그인)";
-    try {
-      const res = await api("/api/sp/download", { method: "POST" });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        toast(err.message || `받지 못했습니다 (${res.status}).`, "bad");
-        return;
+  /** Show the exe's latest status line (e.g. "SharePoint에서 받는 중… 45.2 / 207.8 MB") while `promise` runs. */
+  function followProgress(promise, show) {
+    let stop = false;
+    const tick = async () => {
+      while (!stop) {
+        const p = await apiJson("/api/progress").catch(() => null);
+        if (!stop && p && p.message) show(p.message);
+        await new Promise((r) => setTimeout(r, 1000));
       }
-      const name = decodeURIComponent(res.headers.get("X-File-Name") || "Tool_Verification.xlsx");
-      const modified = decodeURIComponent(res.headers.get("X-Modified") || "");
-      await loadExcel(new Uint8Array(await res.arrayBuffer()), name, false, "sharepoint");
-      desktop.name = name;
-      $("#sp-name").textContent = `SharePoint: ${name}`;
-      toast(`SharePoint 최신본을 받았습니다${modified ? ` (수정 ${modified.replace("T", " ").replace("Z", " UTC")})` : ""}.`, "good");
-    } catch (e) {
-      toast(`받지 못했습니다: ${e.message}`, "bad");
-    } finally {
-      btn.disabled = false;
-      btn.textContent = "SharePoint에서 최신 파일 받기";
+    };
+    tick();
+    return promise.finally(() => { stop = true; });
+  }
+
+  /** Download the latest workbook from SharePoint. Returns true when it was loaded. */
+  function downloadFromSharePoint() {
+    if (state.busy) {
+      toast("사진을 읽는 중에는 엑셀을 바꿀 수 없습니다. 끝난 뒤 다시 받으세요.", "bad");
+      return Promise.resolve(false);
     }
+    if (state.loading) return state.loading.then(() => !!state.excel && state.excel.source === "sharepoint");
+    const btn = $("#sp-download");
+    const label = $("#sp-name");
+    btn.disabled = true;
+    btn.textContent = "SharePoint에서 받는 중…";
+    label.textContent = "SharePoint 연결 중… (로그인 창이 뜨면 로그인해 주세요)";
+    const run = (async () => {
+      try {
+        const res = await api("/api/sp/download", { method: "POST" });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          toast(err.message || `받지 못했습니다 (${res.status}).`, "bad");
+          label.textContent = "받지 못했습니다. 버튼을 눌러 다시 받으세요.";
+          return false;
+        }
+        const name = decodeURIComponent(res.headers.get("X-File-Name") || "Tool_Verification.xlsx");
+        const modified = decodeURIComponent(res.headers.get("X-Modified") || "");
+        label.textContent = "엑셀 여는 중…";
+        await openExcel(new Uint8Array(await res.arrayBuffer()), name, false, "sharepoint");
+        desktop.name = name;
+        label.textContent = `SharePoint: ${name}${modified ? ` · 수정 ${modified.replace("T", " ").replace("Z", " UTC")}` : ""}`;
+        toast("SharePoint 최신본을 받았습니다. 사진을 넣으면 됩니다.", "good");
+        return true;
+      } catch (e) {
+        toast(`받지 못했습니다: ${e.message}`, "bad");
+        label.textContent = "받지 못했습니다. 버튼을 눌러 다시 받으세요.";
+        return false;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "SharePoint에서 다시 받기";
+      }
+    })();
+    const loading = followProgress(run, (m) => { if (/받는 중|여는 중|로그인/.test(m)) label.textContent = m; })
+      .finally(() => { if (state.loading === loading) state.loading = null; renderActions(); });
+    state.loading = loading;
+    renderActions();
+    return loading;
+  }
+
+  /** The file changed on SharePoint after our download: redo the same photos on the latest version. */
+  async function reapplyOnLatest() {
+    const jobs = state.result ? [...state.result.changes.map((c) => c.job), ...(state.result.missing || [])] : [];
+    state.result = null;
+    renderAll();
+    if (!(await downloadFromSharePoint())) return;
+    state.jobs = jobs; // targets are found again by serial in the new file
+    renderJobs();
+    await applyJobs();
   }
 
   async function uploadToSharePoint() {
     const result = state.result;
     if (!result) return;
-    result.upload = { busy: true };
+    result.upload = { busy: true, message: `SharePoint에 올리는 중… (${(result.blob.size / 1e6).toFixed(0)} MB)` };
     renderResult();
-    const r = await apiJson("/api/sp/upload", { method: "POST", body: result.blob });
+    const r = await followProgress(apiJson("/api/sp/upload", { method: "POST", body: result.blob }), (m) => {
+      if (result.upload && result.upload.busy && /올리는 중|확인 중/.test(m)) {
+        result.upload.message = m;
+        const el = document.getElementById("sp-progress");
+        if (el) el.textContent = m;
+      }
+    });
     result.upload = r.ok ? { done: true, ...r } : { error: r.message || "올리지 못했습니다.", code: r.code };
     renderResult();
     toast(r.ok ? "SharePoint에 올렸습니다." : result.upload.error, r.ok ? "good" : "bad");
@@ -509,12 +576,15 @@
           up.modified ? ` · 수정 시각 ${String(up.modified).replace("T", " ").replace("Z", " UTC")}` : ""),
         h("p", { class: "muted small" }, "이전 버전은 SharePoint의 '버전 기록'에서 되돌릴 수 있습니다."));
     }
-    const what = result.testMode
-      ? `지역 시트는 그대로 두고 '${result.testSheet}' 탭에 ${result.changes.length}건이 들어갑니다.`
-      : `지역 시트의 ${result.changes.length}건(날짜·사진)이 바뀝니다.`;
+    if (up.busy) {
+      return h("div", { class: "sp-box" },
+        h("strong", {}, `SharePoint의 '${desktop.name || result.name}'에 올리는 중`),
+        h("p", { id: "sp-progress" }, up.message || "SharePoint에 올리는 중…"),
+        h("p", { class: "muted small" }, "파일이 크면 1~2분 걸립니다. 이 창을 닫지 마세요."));
+    }
     return h("div", { class: `sp-box ${up.error ? "bad" : ""}` },
       h("strong", {}, `SharePoint의 '${desktop.name || result.name}'에 올리기`),
-      h("p", {}, what, " 받은 뒤 다른 사람이 파일을 바꿨거나 지금 편집 중이면 올리지 않고 알려 드립니다. 이전 버전은 SharePoint 버전 기록에 남습니다."),
+      h("p", {}, `지역 시트의 ${result.changes.length}건(날짜·사진)이 바뀝니다. 받은 뒤 다른 사람이 파일을 바꿨거나 지금 편집 중이면 올리지 않고 알려 드립니다.`),
       up.error ? h("p", { class: "sp-error" }, up.error) : null,
       up.code === "locked"
         ? h("p", { class: "muted" }, "Excel 웹 스크립트는 열려 있는 파일 안에서 바뀐 부분만 넣기 때문에, 다른 사람이 파일을 열어 두어도 반영됩니다.")
@@ -523,8 +593,10 @@
         up.code === "locked"
           ? h("button", { class: "primary", id: "sp-script", onclick: scriptFromResult }, "Excel 웹 스크립트로 반영")
           : null,
-        h("button", { class: up.code === "locked" ? "" : "primary", id: "sp-upload", disabled: !!up.busy, onclick: uploadToSharePoint },
-          up.busy ? "올리는 중…" : up.error ? "다시 올리기" : "SharePoint에 올리기")));
+        up.code === "changed"
+          ? h("button", { class: "primary", id: "sp-reapply", onclick: reapplyOnLatest }, "최신 파일로 다시 반영")
+          : h("button", { class: up.code === "locked" ? "" : "primary", id: "sp-upload", onclick: uploadToSharePoint },
+            up.error ? "다시 올리기" : "SharePoint에 올리기")));
   }
 
   function renderResult() {
@@ -532,23 +604,27 @@
     box.replaceChildren();
     box.hidden = !state.result;
     if (!state.result) return;
-    const { changes, testMode, testSheet } = state.result;
+    const { changes, missing } = state.result;
+    const direct = desktop.on && desktop.sharepoint && state.result.source === "sharepoint";
     const rows = changes.map((c) => h("tr", {},
       h("td", {}, c.job.fileName),
-      h("td", {}, testMode ? `${testSheet} 탭 ${c.dest.row}행 ← ${M.label(c.rec)}` : M.label(c.rec)),
+      h("td", {}, M.label(c.rec)),
       h("td", {}, KIND[c.job.kind]),
       h("td", { class: "mono" }, c.job.kind === "tool_photo" ? `${c.before.calLast || "-"} → ${c.after.calLast}` : ""),
       h("td", { class: "mono" }, c.job.kind === "tool_photo" ? `${c.before.calNext || "-"} → ${c.after.calNext}` : ""),
       h("td", {}, c.replaced ? `교체 (${c.replaced}장 삭제)` : "추가", c.notes.length ? h("div", { class: "muted" }, c.notes.join(" ")) : null)));
-    box.append(
+    put(box,
       h("div", { class: "result-head" },
-        h("h3", {}, testMode ? `'${testSheet}' 탭에 ${changes.length}건을 시험 반영했습니다` : `${changes.length}건을 반영한 엑셀을 만들었습니다`),
+        h("h3", {}, `${changes.length}건을 반영했습니다`),
         h("div", { class: "row-gap" },
-          h("button", { class: "primary", onclick: offerResult }, "엑셀 다시 저장"),
+          h("button", { onclick: offerResult }, desktop.on ? "PC에 사본 저장" : "엑셀 다시 저장"),
           h("button", { onclick: () => { state.result = null; renderAll(); } }, "닫기"))),
-      h("p", { class: "muted" }, testMode
-        ? `파일 이름: ${state.result.name} — 지역 시트는 그대로이고, 바뀐 행이 '${testSheet}' 탭에 복사되어 날짜와 사진이 들어갔습니다. 확인 후 SharePoint에 올려 보세요.`
+      h("p", { class: "muted" }, direct
+        ? `파일 이름: ${state.result.name} — 아래에서 SharePoint에 올린 결과를 확인하세요. 다음 사진은 이 파일에 이어서 반영됩니다.`
         : `파일 이름: ${state.result.name} — 회사 공유 폴더의 원본을 이 파일로 바꿔 주세요. 다음 사진은 이 파일에 이어서 반영됩니다.`),
+      missing && missing.length
+        ? h("p", { class: "sp-error" }, `엑셀에서 툴을 찾지 못해 빠진 사진: ${missing.map((j) => j.fileName).join(", ")}`)
+        : null,
       h("div", { class: "table-wrap" }, h("table", {},
         h("thead", {}, h("tr", {}, ...["사진", "대상", "종류", "교정일", "차기교정일", "사진"].map((t) => h("th", {}, t)))),
         h("tbody", {}, ...rows))));
@@ -718,12 +794,6 @@
     $("#demo").addEventListener("click", startDemo);
     $("#apply").addEventListener("click", applyJobs);
     $("#make-script").addEventListener("click", makeScript);
-    const testBox = $("#test-mode");
-    try { testBox.checked = localStorage.getItem("tc-test-mode") === "1"; } catch (e) { /* storage unavailable */ }
-    testBox.addEventListener("change", () => {
-      try { localStorage.setItem("tc-test-mode", testBox.checked ? "1" : "0"); } catch (e) { /* storage unavailable */ }
-      renderActions();
-    });
     $("#clear").addEventListener("click", () => {
       state.jobs = [];
       renderJobs();
@@ -753,6 +823,8 @@
         if (!desktop.sharepoint) return;
         $("#sp-row").hidden = false;
         $("#sp-name").textContent = desktop.name ? `SharePoint: ${desktop.name}` : "SharePoint 파일";
+        renderActions();
+        downloadFromSharePoint(); // start right away: the user only has to add photos
       });
       $("#sp-download").addEventListener("click", downloadFromSharePoint);
     }

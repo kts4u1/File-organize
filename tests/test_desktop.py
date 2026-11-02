@@ -111,6 +111,9 @@ def test_api_needs_token(server):
     assert _req(srv, "/api/sp/download", method="POST", token=False)[0] == 403
     status, _, body = _req(srv, "/api/status")
     assert status == 200 and json.loads(body)["sharepoint"] is True
+    assert _req(srv, "/api/progress", token=False)[0] == 403
+    srv.note("SharePoint에서 받는 중… 12.0 / 207.8 MB")
+    assert json.loads(_req(srv, "/api/progress")[2])["message"].endswith("207.8 MB")
 
 
 def test_download_upload_and_save(server):
@@ -125,6 +128,12 @@ def test_download_upload_and_save(server):
     status, _, body = _req(srv, "/api/save?name=a.xlsx", method="POST", body=b"PKx")
     saved = json.loads(body)["path"]
     assert status == 200 and open(saved, "rb").read() == b"PKx"
+
+
+def test_size_limit_leaves_room_for_the_real_workbook():
+    """The SharePoint file was 207.8 MB on 2026-11-02; a 200 MiB limit would soon refuse it."""
+    from desktop.server import MAX_UPLOAD
+    assert MAX_UPLOAD >= 4 * 208_000_000
 
 
 # ---------------------------------------------------------------- real browser

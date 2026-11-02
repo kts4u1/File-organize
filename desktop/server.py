@@ -4,6 +4,7 @@ Serves the browser tool (web/) with its libraries from disk, and gives the
 page three endpoints the browser cannot do on its own:
 
   GET  /api/status       → whether SharePoint is configured
+  GET  /api/progress     → the latest status line (download/upload progress)
   POST /api/sp/download  → the latest Excel from SharePoint (via Edge login)
   POST /api/sp/upload    → put the updated Excel back on SharePoint
   POST /api/save         → keep a copy in ~/ToolCal/output
@@ -43,7 +44,8 @@ SKELETON_HEAD = (
 )
 TYPES = {".js": "application/javascript; charset=utf-8", ".json": "application/json", ".html": "text/html; charset=utf-8",
          ".css": "text/css; charset=utf-8", ".png": "image/png", ".svg": "image/svg+xml", ".ico": "image/x-icon"}
-MAX_UPLOAD = 200 * 1024 * 1024
+# The real workbook is already ~208 MB (2026-11-02) and grows with every photo.
+MAX_UPLOAD = 1024 * 1024 * 1024
 
 
 class ToolServer:
@@ -55,6 +57,7 @@ class ToolServer:
         self.report = report
         self.log = log
         self.token = secrets.token_urlsafe(24)
+        self.last_message = ""
         self.httpd = ThreadingHTTPServer(("127.0.0.1", port), self._handler())
         self.httpd.daemon_threads = True
         self.thread: threading.Thread | None = None
@@ -71,6 +74,10 @@ class ToolServer:
     def stop(self):
         self.httpd.shutdown()
         self.httpd.server_close()
+
+    def note(self, msg: str):
+        """Remember the latest status line for the page (GET /api/progress)."""
+        self.last_message = msg
 
     # ------------------------------------------------------------ pages
     def index_html(self) -> bytes:
@@ -137,6 +144,10 @@ class ToolServer:
                     return self._json(200, {"ok": True, "desktop": True, "sharepoint": bool(sp),
                                             "name": sp.file.name if sp else "", "url": sp.file.url if sp else "",
                                             "output": str(server.output_dir)})
+                if path == "/api/progress":
+                    if not self._authorized():
+                        return
+                    return self._json(200, {"ok": True, "message": server.last_message})
                 target = server.static_path(path)
                 if target is None:
                     return self._send(404, b"not found", "text/plain")

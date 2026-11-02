@@ -141,8 +141,6 @@
   .include { display: flex; gap: 8px; align-items: center; font-weight: 600; }
   .include input { width: 18px; height: 18px; accent-color: var(--ok); }
   .notes { margin: 0; padding-left: 18px; display: grid; gap: 2px; font-size: 14px; }
-  .test-mode { display: flex; gap: 8px; align-items: center; font-size: 14px; }
-  .test-mode input { width: 18px; height: 18px; accent-color: var(--review); }
   .empty { padding: 28px; text-align: center; color: var(--muted); border: 1px dashed var(--line); border-radius: var(--radius); }
   .actions {
     position: sticky; bottom: 0; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between;
@@ -272,7 +270,6 @@
     <div class="jobs" id="jobs"></div>
     <div class="actions" id="actions" hidden>
       <span class="muted small">'자동 반영'은 바로 들어가고, '확인 필요'는 내용을 보고 체크하면 들어갑니다.</span>
-      <label class="test-mode"><input type="checkbox" id="test-mode"> <span>원본 시트는 그대로 두고 <b>TEST</b> 탭에만 시험 반영</span></label>
       <div class="row-gap">
         <button type="button" id="clear">사진 모두 지우기</button>
         <button type="button" id="make-script" disabled title="Excel 웹(SharePoint)에서 실행해 파일을 내려받지 않고 바로 반영">Excel 웹 스크립트 만들기</button>
