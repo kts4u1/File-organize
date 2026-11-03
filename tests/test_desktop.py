@@ -73,11 +73,21 @@ class FakeSharePoint:
     def download(self):
         return self.data, {"Name": "Tool Verification.xlsx", "TimeLastModified": "2026-11-02T01:00:00Z"}
 
-    def upload(self, data):
+    def upload(self, data, done_photos=()):
         if self.fail:
             raise SharePointError("잠김", 423, "locked")
         self.uploaded = data
+        self.done_photos = list(done_photos)
         return {"ok": True, "name": "Tool Verification.xlsx", "sheets": ["대전", "광주", "TEST"]}
+
+    def list_photos(self):
+        return {"ok": True, "folder": "/sites/x/Shared Documents/툴검교정 사진", "link": "https://x/툴검교정%20사진",
+                "photos": [{"id": "1111", "name": "IMG_1.jpg", "author": "김엔지니어"}]}
+
+    def fetch_photo(self, uid):
+        if uid != "1111":
+            raise SharePointError("목록에 없는 사진입니다.", code="missing")
+        return b"\xff\xd8photo", {"name": "IMG_1.jpg"}
 
 
 @pytest.fixture
@@ -126,6 +136,18 @@ def test_api_needs_token(server):
     assert _req(srv, "/api/progress", token=False)[0] == 403
     srv.note("SharePoint에서 받는 중… 12.0 / 207.8 MB")
     assert json.loads(_req(srv, "/api/progress")[2])["message"].endswith("207.8 MB")
+
+
+def test_phone_photo_endpoints(server):
+    srv, fake = server
+    assert _req(srv, "/api/sp/photos", token=False)[0] == 403
+    status, _, body = _req(srv, "/api/sp/photos")
+    assert status == 200 and json.loads(body)["photos"][0]["author"] == "김엔지니어"
+    status, headers, body = _req(srv, "/api/sp/photo?id=1111")
+    assert status == 200 and body == b"\xff\xd8photo" and headers["Content-Type"] == "image/jpeg"
+    assert _req(srv, "/api/sp/photo?id=2222")[0] == 502
+    status, _, body = _req(srv, "/api/sp/upload?done=1111,3333", method="POST", body=b"PKnew")
+    assert status == 200 and fake.done_photos == ["1111", "3333"]
 
 
 def test_status_log_for_the_page(server):
@@ -393,6 +415,50 @@ def test_sharepoint_window_stays_out_of_the_way(browser_env, tmp_path):
         data3, _ = sp.download()
         assert state(session.sp_window) == "minimized"
         assert sp.upload(data3)["ok"] and not mock.locked
+    finally:
+        session.quit()
+        mock.stop()
+        shutil.rmtree(tmp_path / "profile", ignore_errors=True)
+
+
+def test_phone_photos_from_the_sharepoint_folder(browser_env, tmp_path):
+    """2026-11-03: engineers upload tool photos to a SharePoint folder with the phone app; the program takes them in
+    and, once the workbook is uploaded, moves the applied ones to '처리됨'."""
+    from urllib.parse import quote
+
+    from desktop.sharepoint import BrowserSession, SharePoint
+    from mock_sharepoint import DONE_FOLDER, PHOTO_FOLDER
+
+    path = build_workbook(tmp_path / "ph.xlsx", with_pictures=False)
+    with open(path, "rb") as fh:
+        mock = MockSharePoint(fh.read()).start()
+    session = BrowserSession(tmp_path / "profile", report=lambda m: None, browser="chrome", binary=CHROMIUM, headless=True)
+    try:
+        session.open_tool("data:text/html,<p>tool</p>")
+        sp = SharePoint(session, SharePointFile.parse(mock.page_url), report=lambda m: None, login_timeout=20)
+        data, _ = sp.download()
+
+        first = sp.list_photos()  # no folder yet: it is made so engineers can upload into it
+        assert first["created"] and first["photos"] == [] and PHOTO_FOLDER in mock.folders
+        assert first["link"] == mock.origin + quote(PHOTO_FOLDER)
+
+        a = mock.add_photo("IMG_0001.jpg", b"\xff\xd8 photo A", "김엔지니어")
+        b = mock.add_photo("IMG 0002 'b'.jpg", b"\xff\xd8 photo B", "이엔지니어")  # spaces and quotes
+        mock.add_photo("memo.txt", b"not a photo")
+        mock.folders[DONE_FOLDER] = {}
+        mock.add_photo("IMG_0001.jpg", b"older", folder=DONE_FOLDER)  # same name already processed before
+        res = sp.list_photos()
+        assert not res["created"]
+        assert [(p["name"], p["author"]) for p in res["photos"]] == [("IMG_0001.jpg", "김엔지니어"), ("IMG 0002 'b'.jpg", "이엔지니어")]
+        assert sp.fetch_photo(a) == (b"\xff\xd8 photo A", sp.photos[a])
+        assert sp.fetch_photo(b.upper())[0] == b"\xff\xd8 photo B"
+        with pytest.raises(SharePointError):
+            sp.fetch_photo("00000000-0000-0000-0000-000000000000")
+
+        result = sp.upload(data, [a])  # only photo A was applied
+        assert result["ok"] and result["photos"] == {"moved": 1, "failed": 0}
+        assert mock.folders[DONE_FOLDER]["IMG_0001 1.jpg"]["data"] == b"\xff\xd8 photo A"  # kept both
+        assert [p["name"] for p in sp.list_photos()["photos"]] == ["IMG 0002 'b'.jpg"]  # B waits for next time
     finally:
         session.quit()
         mock.stop()

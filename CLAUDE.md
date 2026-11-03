@@ -4,10 +4,11 @@
 Cal Last / Cal Next와 Label Photo / SMAX Tool Photo를 고치는 도구입니다.
 저장소 `kts4u1/File-organize`, 브랜치 `claude/exciting-lovelace-hs156x`.
 
-## 한눈에 (2026-11-02 기준)
+## 한눈에 (2026-11-03 기준)
 - 주로 쓰는 것: 회사 PC 프로그램 `툴검교정.exe`. 실행 → SharePoint 파일 자동 받기 → 사진 넣기 → `SharePoint에 반영 (N건)` 한 번 → 올리기 →
   올린 파일이 SharePoint 창에 보기 모드로 열림. 실제 회사 SharePoint에서 받기·올리기 성공 확인됨(사용자 화면).
-- 마지막으로 바꾼 것(실제 PC 확인 전): 창 하나(Edge), SharePoint 창 평소 최소화, 올린 뒤 파일 보기. → 아래 '열린 항목'.
+- 실제 PC 확인 전: 창 하나(Edge), SharePoint 창 평소 최소화, 올린 뒤 파일 보기(2026-11-02),
+  휴대폰 사진 폴더(엔지니어가 SharePoint 앱으로 `툴검교정 사진` 폴더에 올리면 프로그램이 가져와 반영, 2026-11-03). → 아래 '열린 항목'.
 
 ## 사용자 / 작업 방식
 - 사용자는 Philips 한국 현장 서비스 엔지니어, 프로그래밍 경험 없음. 코드는 Claude가 작성·디버깅. 대화는 한국어 존댓말, 짧고 구체적으로.
@@ -36,6 +37,13 @@ Cal Last / Cal Next와 Label Photo / SMAX Tool Photo를 고치는 도구입니�
      (`Program.wait_until_closed`). Edge를 못 열 때만 Tk 메시지 상자.
    - SharePoint 창(로그인된 별도 Edge 창, 받기·올리기를 이 창에서 함): 평소 최소화, 로그인 기다릴 때만 앞으로, 제목·노란 줄 "닫지 마세요".
      올리기 성공 뒤 이 창에 파일을 보기 모드로 열어 앞에 둠.
+   - 휴대폰 사진(2026-11-03 "핸드폰으로 찍은 사진을 바로 올리면 sharepoint에", 엔지니어 여러 명, 휴대폰엔 Teams·SharePoint 앱):
+     휴대폰 앱은 회사 IT 앱 등록 없이 못 만들어서 **폴더 방식** — 엔지니어가 SharePoint 앱으로 엑셀 옆 `툴검교정 사진` 폴더에 올림
+     (config `photo_folder`). 프로그램이 엑셀을 받은 뒤 폴더 확인(없으면 만듦, `PHOTOS_JS`), 새 사진을 받아(`download.aspx?UniqueId=`)
+     카드로(`job.sp`, "휴대폰 사진 · 올린 사람"), 올리기 성공 뒤 반영한 사진만 `처리됨`으로 옮김(`MOVE_JS`: `SP.MoveCopyUtil.MoveFileByPath`
+     KeepBoth, 안 되면 `moveto` + 시각 붙인 이름). `/api/sp/photos`, `/api/sp/photo?id=`, `/api/sp/upload?done=ids`.
+     STEP 2 아래 '휴대폰 사진 다시 확인', '휴대폰으로 올리는 방법'(폴더 QR + 링크 복사). 한 번에 최대 40장, 30 MB 넘는 파일은 건너뜀.
+     테스트 `test_phone_photos_from_the_sharepoint_folder`, `test_phone_photo_endpoints`.
 3. `app.py`, `toolcal/` — 처음 만든 Python(Streamlit) 버전. Claude API 선택 사항. 지금은 1·2가 주력.
 
 ## 주요 파일
@@ -45,7 +53,8 @@ Cal Last / Cal Next와 Label Photo / SMAX Tool Photo를 고치는 도구입니�
 - `desktop/sharepoint.py`(`SharePointFile` 주소 해석·`view_url`·`landing_url`, `BrowserSession` Edge 창 관리, `SharePoint` 받기·올리기),
   `desktop/server.py`(로컬 서버, `/api/*`), `desktop/app.py`(`Program`, 설정·로그 경로, `DEFAULT_SHAREPOINT_URL`).
 - `build.py` / `build.bat`(PyInstaller onefile, CRLF·ASCII만), `requirements-desktop.txt`(selenium, pyinstaller).
-- `tests/mock_sharepoint.py`(SharePoint 흉내: 로그인 쿠키, digest, ETag, Doc.aspx 편집=잠금·보기=안 잠금, 느린 전송), `tests/test_desktop.py`.
+- `tests/mock_sharepoint.py`(SharePoint 흉내: 로그인 쿠키, digest, ETag, Doc.aspx 편집=잠금·보기=안 잠금, 느린 전송,
+  사진 폴더 목록·만들기·받기·옮기기(KeepBoth), `add_photo()`), `tests/test_desktop.py`.
 
 ## SharePoint
 - 대상 파일: `https://share.philips.com/:x:/r/sites/HSCSCCJ-jr-all/_layouts/15/Doc.aspx?…sourcedoc={5b1d0df6-6a62-49fb-92e3-3cb102684f84}…`
@@ -56,7 +65,7 @@ Cal Last / Cal Next와 Label Photo / SMAX Tool Photo를 고치는 도구입니�
 
 ## 빌드 / 테스트
 - 빌드: `build.bat` → `dist\툴검교정.exe` (`--collect-submodules=selenium`, `--add-data web`).
-- `python -m pytest` — 52개(2026-11-02). Python 쪽 + desktop 서버 + 실제 Chromium으로 SharePoint 흉내 서버 받기/올리기.
+- `python -m pytest` — 54개(2026-11-03). Python 쪽 + desktop 서버 + 실제 Chromium으로 SharePoint 흉내 서버 받기/올리기.
   Chromium은 `/opt/pw-browsers/chromium-1194`, PATH에서 node22(다른 버전 chromedriver)를 빼고 실행.
   headless Chromium은 브라우저의 첫 창을 닫을 때 가끔 15초 멈춤 → 창 닫기 테스트는 도구를 두 번째 창에 엶.
 - 브라우저 도구는 Playwright(Node)로 확인(스크래치 스크립트). Office Script는 문서 기준 타입 검사 + 모의 실행만, 실제 Excel 웹 실행은 사용자 확인 필요.
@@ -81,7 +90,10 @@ Cal Last / Cal Next와 Label Photo / SMAX Tool Photo를 고치는 도구입니�
   올리기 성공 뒤 파일을 보기 모드(`view_url`)로 열고 앞에 둠(`keep_front`). 테스트 `test_sharepoint_window_stays_out_of_the_way`.
 - 결과 칸에 "null" 글자가 찍히던 문제 → `put()`(null 빼고 append).
 
-## 열린 항목 (2026-11-02)
+## 열린 항목 (2026-11-03)
+- 휴대폰 사진 폴더 — 실제 SharePoint에서 미확인: 폴더 만들기(`AddUsingPath`), 목록(`GetFolderByServerRelativePath(decodedurl=@a)/Files`),
+  옮기기(`MoveCopyUtil`), 폴더 링크(`origin + 경로`)를 휴대폰 SharePoint 앱이 여는지. 실패하면 debug_log.txt의 '사진 폴더'/'사진 옮기기' 줄 확인.
+- 반영 못 하는 사진(HEIC, 엉뚱한 사진)은 폴더에 남아 매번 다시 나옴 → 필요하면 카드에 '반영 안 하고 처리됨으로' 버튼.
 - 창 하나 + SharePoint 창 최소화 + 올린 뒤 파일 보기 — 새 빌드로 실제 확인 필요.
   (Windows Edge에서 msedgedriver가 창을 바꿀 때 최소화된 창을 다시 띄우는지 미확인 — 띄우면 잠깐 보였다가 다시 최소화됨)
 - Excel 웹 보기 모드(action=view)가 실제로 잠그지 않는지 확인(올린 파일을 띄워 둔 채 다음 사진 올리기).

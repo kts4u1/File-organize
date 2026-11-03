@@ -77,7 +77,8 @@ class Program:
         self.session = BrowserSession(PROFILE_DIR if not args.profile else Path(args.profile), self.report,
                                       browser=args.browser, binary=args.binary, headless=args.headless, log=log)
         try:
-            self.sharepoint = SharePoint(self.session, SharePointFile.parse(url), self.report, log)
+            self.sharepoint = SharePoint(self.session, SharePointFile.parse(url), self.report, log,
+                                         photo_folder=cfg.get("photo_folder"))  # 휴대폰 사진 폴더 (기본 "툴검교정 사진")
         except SharePointError as exc:
             log(f"SharePoint 주소 오류: {exc}")
             self.sharepoint = None

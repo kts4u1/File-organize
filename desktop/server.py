@@ -6,7 +6,9 @@ page three endpoints the browser cannot do on its own:
   GET  /api/status       → whether SharePoint is configured
   GET  /api/progress     → the latest status line and the recent ones (the program's status log)
   POST /api/sp/download  → the latest Excel from SharePoint (via Edge login)
-  POST /api/sp/upload    → put the updated Excel back on SharePoint
+  POST /api/sp/upload    → put the updated Excel back on SharePoint (?done=ids: then move those phone photos)
+  GET  /api/sp/photos    → new phone photos in the SharePoint photo folder (created when missing)
+  GET  /api/sp/photo?id= → one of those photos
   POST /api/save         → keep a copy in ~/ToolCal/output
   POST /api/open?what=   → open the output or log folder in Explorer
 
@@ -166,11 +168,34 @@ class ToolServer:
                         return
                     return self._json(200, {"ok": True, "message": server.last_message, "seq": server.seq,
                                             "log": [{"t": x["t"], "m": x["m"]} for x in list(server.lines)]})
+                if path in ("/api/sp/photos", "/api/sp/photo"):
+                    if not self._authorized():
+                        return
+                    return self._photos(path)
                 target = server.static_path(path)
                 if target is None:
                     return self._send(404, b"not found", "text/plain")
                 ctype = TYPES.get(target.suffix.lower()) or mimetypes.guess_type(target.name)[0] or "application/octet-stream"
                 return self._send(200, target.read_bytes(), ctype)
+
+            def _photos(self, path: str):
+                sp = server.sharepoint
+                if not sp:
+                    return self._json(400, {"ok": False, "message": "SharePoint 주소가 설정되지 않았습니다."})
+                try:
+                    if path == "/api/sp/photos":
+                        return self._json(200, sp.list_photos())
+                    uid = (parse_qs(urlparse(self.path).query).get("id") or [""])[0]
+                    data, meta = sp.fetch_photo(uid)
+                    name = str(meta.get("name") or "photo.jpg")
+                    ctype = mimetypes.guess_type(name)[0] or "application/octet-stream"
+                    return self._send(200, data, ctype, {"X-File-Name": quote(name)})
+                except SharePointError as exc:
+                    server.log(f"{path}: {exc} ({exc.code}, {exc.status})")
+                    return self._json(502, {"ok": False, "code": exc.code, "status": exc.status, "message": str(exc)})
+                except Exception as exc:
+                    server.log(f"{path}: 예외 {type(exc).__name__}: {exc}")
+                    return self._json(500, {"ok": False, "code": "error", "message": f"처리 중 오류: {exc}"})
 
             def _body(self) -> bytes:
                 n = int(self.headers.get("Content-Length") or 0)
@@ -195,7 +220,8 @@ class ToolServer:
                         if not server.sharepoint:
                             return self._json(400, {"ok": False, "message": "SharePoint 주소가 설정되지 않았습니다."})
                         data = self._body()
-                        result = server.sharepoint.upload(data)
+                        done = [i for i in (parse_qs(url.query).get("done") or [""])[0].split(",") if i.strip()]
+                        result = server.sharepoint.upload(data, done) if done else server.sharepoint.upload(data)
                         server.report(f"SharePoint에 올림: {result.get('name')}")
                         return self._json(200, result)
                     if url.path == "/api/open":

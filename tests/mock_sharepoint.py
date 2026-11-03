@@ -3,7 +3,8 @@
 Implements only what the program uses, with SharePoint's rules that matter:
 requests need the login cookie the file page sets, uploads need the form
 digest from /_api/contextinfo, If-Match must match the current ETag (412),
-and a file open for editing is locked (423).
+and a file open for editing is locked (423). Also a document-library folder for phone photos
+(list, create, download, move with KeepBoth).
 """
 
 from __future__ import annotations
@@ -17,6 +18,15 @@ from urllib.parse import parse_qs, urlparse
 SITE = "/sites/HSCSCCJ-jr-all"
 GUID = "5b1d0df6-6a62-49fb-92e3-3cb102684f84"
 DIGEST = "0x5EED,02 Nov 2026 10:00:00 -0000"
+LIBRARY = f"{SITE}/Shared Documents"
+PHOTO_FOLDER = f"{LIBRARY}/툴검교정 사진"
+DONE_FOLDER = f"{PHOTO_FOLDER}/처리됨"
+
+
+def _alias(query: str) -> str:
+    """The '@a' parameter alias of a SharePoint REST call: '…' with doubled quotes."""
+    raw = (parse_qs(query).get("@a") or [""])[0]
+    return raw[1:-1].replace("''", "'") if raw.startswith("'") and raw.endswith("'") else raw
 
 
 class MockSharePoint:
@@ -30,6 +40,8 @@ class MockSharePoint:
         self.download_seconds = 0.0  # >0: send the file slowly, like a slow network
         self.upload_seconds = 0.0  # >0: answer the upload late
         self.uploads: list[bytes] = []
+        self.folders: dict[str, dict[str, dict]] = {LIBRARY: {}}  # path → {name: {"id", "data", "created", "author"}}
+        self.moves: list[tuple[str, str]] = []
         self.requests: list[str] = []
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
         self.httpd.daemon_threads = True
@@ -52,6 +64,21 @@ class MockSharePoint:
         if data is not None:
             self.data = data
         self.version += 1
+
+    def add_photo(self, name: str, data: bytes, author: str = "김엔지니어", folder: str = PHOTO_FOLDER) -> str:
+        """An engineer uploads a photo from the phone app."""
+        import uuid
+        uid = str(uuid.uuid4())
+        self.folders.setdefault(folder, {})[name] = {"id": uid, "data": data, "author": author,
+                                                     "created": f"2026-11-03T0{len(self.folders[folder]) % 10}:00:00Z"}
+        return uid
+
+    def _photo_by_id(self, uid: str):
+        for files in self.folders.values():
+            for f in files.values():
+                if f["id"] == uid:
+                    return f
+        return None
 
     def start(self):
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
@@ -97,8 +124,25 @@ class MockSharePoint:
                                       {"Set-Cookie": "FedAuth=ok; Path=/; HttpOnly"})
                 if not self._logged_in():
                     return self._send(403, b"Access denied")
+                if u.path == f"{SITE}/_api/web/GetFolderByServerRelativePath(decodedurl=@a)":
+                    path = _alias(u.query)
+                    if path not in sp.folders:
+                        return self._send(404, b'{"error":{"code":"-2147024894, System.IO.FileNotFoundException"}}', "application/json")
+                    return self._send(200, json.dumps({"Exists": True}).encode(), "application/json")
+                if u.path == f"{SITE}/_api/web/GetFolderByServerRelativePath(decodedurl=@a)/Files":
+                    path = _alias(u.query)
+                    if path not in sp.folders:
+                        return self._send(404, b"not found")
+                    files = [{"Name": n, "UniqueId": f["id"], "Length": str(len(f["data"])), "TimeCreated": f["created"],
+                              "ServerRelativeUrl": f"{path}/{n}", "Author": {"Title": f["author"]}}
+                             for n, f in sp.folders[path].items()]
+                    return self._send(200, json.dumps({"value": files}, ensure_ascii=False).encode(), "application/json")
                 if u.path == f"{SITE}/_layouts/15/download.aspx":
-                    if parse_qs(u.query).get("UniqueId", [""])[0].lower() != GUID:
+                    uid = parse_qs(u.query).get("UniqueId", [""])[0].lower()
+                    photo = sp._photo_by_id(uid)
+                    if photo is not None:
+                        return self._send(200, photo["data"], "image/jpeg")
+                    if uid != GUID:
                         return self._send(404, b"not found")
                     headers = {"Content-Disposition": f"attachment; filename*=UTF-8''{sp.name}"}
                     if not sp.download_seconds:
@@ -131,6 +175,32 @@ class MockSharePoint:
                     return self._send(403, b"Access denied")
                 if u.path == f"{SITE}/_api/contextinfo":
                     return self._send(200, json.dumps({"FormDigestValue": DIGEST}).encode(), "application/json")
+                if u.path.startswith(f"{SITE}/_api/") and self.headers.get("X-RequestDigest") != DIGEST:
+                    return self._send(403, b"The security validation for this page is invalid.")
+                if u.path == f"{SITE}/_api/web/folders/AddUsingPath(decodedurl=@a)":
+                    path = _alias(u.query)
+                    if path.rsplit("/", 1)[0] not in sp.folders:
+                        return self._send(404, b"parent folder not found")
+                    sp.folders.setdefault(path, {})
+                    return self._send(200, json.dumps({"ServerRelativeUrl": path}, ensure_ascii=False).encode(), "application/json")
+                if u.path == f"{SITE}/_api/SP.MoveCopyUtil.MoveFileByPath()":
+                    req = json.loads(body or b"{}")
+                    src = req["srcPath"]["DecodedUrl"].removeprefix(sp.origin)
+                    dst = req["destPath"]["DecodedUrl"].removeprefix(sp.origin)
+                    (sfolder, sname), (dfolder, dname) = src.rsplit("/", 1), dst.rsplit("/", 1)
+                    if sname not in sp.folders.get(sfolder, {}) or dfolder not in sp.folders:
+                        return self._send(404, b"not found")
+                    if dname in sp.folders[dfolder]:
+                        if not req.get("options", {}).get("KeepBoth"):
+                            return self._send(400, b"file exists")
+                        stem, dot, ext = dname.rpartition(".")
+                        k = 1
+                        while f"{stem} {k}.{ext}" in sp.folders[dfolder]:
+                            k += 1
+                        dname = f"{stem} {k}.{ext}"
+                    sp.folders[dfolder][dname] = sp.folders[sfolder].pop(sname)
+                    sp.moves.append((src, f"{dfolder}/{dname}"))
+                    return self._send(200, b"{}", "application/json")
                 if u.path == f"{SITE}/_api/web/GetFileById('{GUID}')/$value":
                     if self.headers.get("X-HTTP-Method") != "PUT":
                         return self._send(400, b"expected X-HTTP-Method: PUT")

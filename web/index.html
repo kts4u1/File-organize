@@ -160,6 +160,16 @@
   }
 
   /* SharePoint (desktop program) */
+  /* PC program only: phone photos from the SharePoint folder */
+  .phone-row { position: relative; z-index: 1; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding-top: 6px; border-top: 1px dashed var(--line); }
+  .phone-row button { padding: 5px 12px; font-size: 14px; }
+  .phone-row .bad { color: var(--error); }
+  .job-from { font-size: 12px; color: var(--muted); font-weight: 400; margin-left: 6px; }
+  .phone-panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; display: flex; flex-wrap: wrap; gap: 16px 24px; align-items: flex-start; }
+  .phone-panel canvas { width: 180px; height: 180px; image-rendering: pixelated; border: 1px solid var(--line); border-radius: 6px; background: #fff; flex: none; }
+  .phone-panel .how { flex: 1 1 320px; min-width: 0; display: grid; gap: 8px; }
+  .phone-panel ol { margin: 0; padding-left: 20px; display: grid; gap: 4px; }
+  .phone-panel .link { font-family: var(--font-data); font-size: 12.5px; overflow-wrap: anywhere; background: var(--surface-2); padding: 6px 8px; border-radius: 6px; }
   .sp-row { position: relative; z-index: 1; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding-top: 6px; border-top: 1px dashed var(--line); }
   .sp-box { display: grid; gap: 6px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); }
   .sp-box p { margin: 0; }
@@ -269,6 +279,25 @@
       <div class="engine" id="engine-status" aria-live="polite"></div>
       <span class="pick"><button type="button" tabindex="-1">사진 선택</button></span>
       <input type="file" id="photo-input" accept="image/*,.heic,.heif" multiple aria-label="사진 선택">
+      <div class="phone-row" id="phone-row" hidden>
+        <span class="small" id="phone-status" aria-live="polite">휴대폰 사진 폴더를 확인합니다…</span>
+        <button type="button" id="phone-check">휴대폰 사진 다시 확인</button>
+        <button type="button" id="phone-howto" aria-expanded="false" aria-controls="phone-panel">휴대폰으로 올리는 방법</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="phone-panel" id="phone-panel" aria-label="휴대폰으로 사진 올리기" hidden>
+    <canvas id="phone-qr" width="180" height="180" aria-label="휴대폰 사진 폴더 QR 코드"></canvas>
+    <div class="how">
+      <strong>휴대폰으로 사진 올리기 (엔지니어용)</strong>
+      <ol>
+        <li>휴대폰 카메라로 왼쪽 QR을 찍어 SharePoint 폴더를 엽니다 (SharePoint 앱이나 브라우저에서 회사 계정으로 로그인).</li>
+        <li>폴더에서 <b>+</b> 또는 <b>업로드</b> → 툴 사진(이름·시리얼 메모 또는 QR 스티커 + 교정필증이 한 장에)과 SMAX 캡처를 올립니다.</li>
+        <li>담당자 PC에서 툴검교정.exe를 켜면 새 사진을 자동으로 가져옵니다. 반영해서 올린 사진은 '처리됨' 폴더로 옮겨집니다.</li>
+      </ol>
+      <div class="link" id="phone-link"></div>
+      <div class="row-gap"><button type="button" id="phone-copy">링크 복사</button><button type="button" id="phone-close">닫기</button></div>
     </div>
   </section>
 

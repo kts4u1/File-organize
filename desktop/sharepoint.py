@@ -26,13 +26,20 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 CHUNK = 3 * 1024 * 1024  # bytes per WebDriver call when moving file contents
 COMMAND_TIMEOUT = 120  # max wait for one WebDriver command; long transfers are polled instead
 TRANSFER_DEADLINE = 20 * 60  # give up a download/upload after this many seconds
 STALL_LIMIT = 180  # …or when a download receives nothing for this long
 LOGIN_HOSTS = ("login.microsoftonline", "login.live", "/adfs/", "login.windows", "sso.")
+# Phone photos (2026-11-03): engineers upload them to this folder (next to the workbook) with the SharePoint/Teams
+# app; the program brings them in and, once applied, moves them to the "done" subfolder.
+DEFAULT_PHOTO_FOLDER = "툴검교정 사진"
+DONE_FOLDER = "처리됨"
+PHOTO_EXTS = (".jpg", ".jpeg", ".png", ".heic", ".heif", ".webp")
+MAX_PHOTOS = 40  # per check
+MAX_PHOTO_BYTES = 30_000_000
 # The SharePoint window only does the transfers (it holds the user's login); it stays minimized and says so.
 SP_TITLE = "툴 검교정 · SharePoint 연결 창 (닫지 마세요)"
 SP_NOTE = ("툴 검교정 프로그램이 이 창으로 SharePoint 파일을 받고 올립니다. 닫지 말고 그대로 두세요 "
@@ -161,6 +168,83 @@ return true;
 """
 
 STATE_JS = "return window[arguments[0]] || null;"
+
+# Shared by the folder scripts: '@a' parameter alias (paths may hold spaces, Korean, quotes) and the form digest.
+_FOLDER_HELPERS = r"""
+const alias = p => '@a=' + encodeURIComponent("'" + p.replace(/'/g, "''") + "'");
+const NOMETA = 'application/json;odata=nometadata';
+const digestOf = async site => {
+  const r = await fetch(`${site}/_api/contextinfo`, {method: 'POST', credentials: 'include', headers: {Accept: NOMETA}});
+  if (!r.ok) throw Object.assign(new Error('contextinfo'), {status: r.status, text: (await r.text()).slice(0, 300)});
+  const j = await r.json();
+  return j.FormDigestValue || (j.d && j.d.GetContextWebInformation && j.d.GetContextWebInformation.FormDigestValue);
+};
+const folderExists = async (site, path) => {
+  const r = await fetch(`${site}/_api/web/GetFolderByServerRelativePath(decodedurl=@a)?$select=Exists&${alias(path)}`,
+                        {credentials: 'include', headers: {Accept: NOMETA}});
+  if (r.status === 404) return false;
+  if (!r.ok) throw Object.assign(new Error('folder'), {status: r.status, text: (await r.text()).slice(0, 300)});
+  return !!(await r.json()).Exists;
+};
+const makeFolder = async (site, path, digest) => {
+  const opts = {method: 'POST', credentials: 'include', headers: {Accept: NOMETA, 'X-RequestDigest': digest}};
+  let r = await fetch(`${site}/_api/web/folders/AddUsingPath(decodedurl=@a)?${alias(path)}`, opts);
+  if (!r.ok) r = await fetch(`${site}/_api/web/folders/add(url=@a)?${alias(path)}`, opts);  // older servers
+  if (!r.ok) throw Object.assign(new Error('create folder'), {status: r.status, text: (await r.text()).slice(0, 300)});
+};
+"""
+
+# List the photo folder (creating it when asked and missing).
+PHOTOS_JS = _FOLDER_HELPERS + r"""
+const [site, path, create] = arguments; const done = arguments[arguments.length - 1];
+(async () => {
+  try {
+    let created = false;
+    if (!(await folderExists(site, path))) {
+      if (!create) return done({ok: true, exists: false, created, files: []});
+      await makeFolder(site, path, await digestOf(site));
+      created = true;
+    }
+    const r = await fetch(`${site}/_api/web/GetFolderByServerRelativePath(decodedurl=@a)/Files` +
+                          `?$select=Name,UniqueId,Length,TimeCreated,ServerRelativeUrl,Author/Title&$expand=Author&$top=500&${alias(path)}`,
+                          {credentials: 'include', headers: {Accept: NOMETA}});
+    if (!r.ok) return done({ok: false, status: r.status, step: 'list', text: (await r.text()).slice(0, 300)});
+    const j = await r.json();
+    const files = (j.value || []).map(f => ({id: String(f.UniqueId || '').toLowerCase(), name: f.Name, size: Number(f.Length || 0),
+      created: f.TimeCreated || '', url: f.ServerRelativeUrl || `${path}/${f.Name}`, author: (f.Author && f.Author.Title) || ''}));
+    done({ok: true, exists: true, created, files});
+  } catch (e) { done({ok: false, status: e.status || 0, step: e.message, text: e.text || String(e)}); }
+})();
+"""
+
+# Move processed photos into the done folder (keeping both when a name is taken).
+MOVE_JS = _FOLDER_HELPERS + r"""
+const [site, origin, doneFolder, items] = arguments; const done = arguments[arguments.length - 1];
+(async () => {
+  const results = [];
+  try {
+    const digest = await digestOf(site);
+    if (!(await folderExists(site, doneFolder))) await makeFolder(site, doneFolder, digest);
+    for (const it of items) {
+      const verbose = 'application/json;odata=verbose';
+      let r = await fetch(`${site}/_api/SP.MoveCopyUtil.MoveFileByPath()`, {method: 'POST', credentials: 'include',
+        headers: {Accept: verbose, 'Content-Type': verbose, 'X-RequestDigest': digest},
+        body: JSON.stringify({
+          srcPath: {__metadata: {type: 'SP.ResourcePath'}, DecodedUrl: origin + it.from},
+          destPath: {__metadata: {type: 'SP.ResourcePath'}, DecodedUrl: origin + it.to},
+          options: {__metadata: {type: 'SP.MoveCopyOptions'}, KeepBoth: true, ResetAuthorAndCreatedOnCopy: false,
+                    ShouldBypassSharedLocks: true}})});
+      if (!r.ok && (r.status === 400 || r.status === 404 || r.status === 405)) {
+        // older servers: move by id under a unique name
+        r = await fetch(`${site}/_api/web/GetFileById('${it.id}')/moveto(newurl=@a,flags=1)?${alias(it.alt)}`,
+                        {method: 'POST', credentials: 'include', headers: {Accept: NOMETA, 'X-RequestDigest': digest}});
+      }
+      results.push({id: it.id, ok: r.ok, status: r.status, text: r.ok ? '' : (await r.text()).slice(0, 300)});
+    }
+    done({ok: true, results});
+  } catch (e) { done({ok: false, status: e.status || 0, step: e.message, text: e.text || String(e), results}); }
+})();
+"""
 
 CHUNK_GET_JS = r"""
 const buf = window.__tcDl; if (!buf) return null;
@@ -406,9 +490,11 @@ class BrowserSession:
 # ---------------------------------------------------------------- SharePoint
 class SharePoint:
     def __init__(self, session: BrowserSession, file: SharePointFile, report: Callable[[str], None] = print,
-                 log: Callable[[str], None] = lambda m: None, login_timeout: float = 150):
+                 log: Callable[[str], None] = lambda m: None, login_timeout: float = 150, photo_folder: str | None = None):
         self.session = session
         self.file = file
+        self.photo_folder = (photo_folder or DEFAULT_PHOTO_FOLDER).strip().rstrip("/")
+        self.photos: dict[str, dict] = {}  # phone photos seen in the folder, by UniqueId
         self.report = report
         self.log = log
         self.login_timeout = login_timeout
@@ -510,10 +596,18 @@ class SharePoint:
             time.sleep(1)
 
     def _fetch_file(self, what: str) -> bytes:
-        """Download the file inside the logged-in page and move it to Python in chunks."""
-        self.driver.execute_script(DOWNLOAD_START_JS, self.file.download_url)
-        state = self._poll("__tcDlState", what, progress=True)
-        if not state.get("ok") or not state.get("pk"):
+        """Download the workbook inside the logged-in page and move it to Python in chunks."""
+        return self._fetch(self.file.download_url, what)
+
+    def _fetch(self, url: str, what: str, photo: bool = False) -> bytes:
+        self.driver.execute_script(DOWNLOAD_START_JS, url)
+        state = self._poll("__tcDlState", what, progress=not photo)
+        if photo:
+            if not state.get("ok") or "text/html" in str(state.get("type", "")):
+                self.log(f"{what} 실패: { {k: v for k, v in state.items() if k != 'cd'} }")
+                code, msg = explain(state.get("status") if not state.get("ok") else 403, "사진 받기")
+                raise SharePointError(msg, state.get("status"), code)
+        elif not state.get("ok") or not state.get("pk"):
             status = state.get("status")
             self.log(f"{what} 실패: { {k: v for k, v in state.items() if k != 'cd'} }")
             if status == 200:  # an HTML page instead of the workbook: usually the login expired
@@ -527,7 +621,7 @@ class SharePoint:
             b64 = self.driver.execute_script(CHUNK_GET_JS, start, CHUNK)
             parts.append(base64.b64decode(b64 or ""))
         data = b"".join(parts)
-        if len(data) != size or not data.startswith(b"PK"):
+        if len(data) != size or not (photo or data.startswith(b"PK")):
             raise SharePointError("파일 내용을 끝까지 받지 못했습니다. 다시 시도하세요.")
         return data
 
@@ -572,15 +666,107 @@ class SharePoint:
         self.log(f"받기 성공 {len(data):,} bytes ({time.time() - t0:.0f}초), ETag {self.etag}")
         return data, info
 
-    def upload(self, data: bytes) -> dict:
+    # ---------------------------------------------------------- phone photos
+    def photo_folder_path(self) -> str:
+        """Server-relative path of the phone-photo folder: a name next to the workbook, or a full '/sites/…' path."""
+        if self.photo_folder.startswith("/"):
+            return self.photo_folder
+        if not self.info.get("ServerRelativeUrl"):
+            self.info = self._file_info()
+        parent = str(self.info.get("ServerRelativeUrl", "")).rsplit("/", 1)[0]
+        return f"{parent}/{self.photo_folder}"
+
+    def folder_link(self, path: str) -> str:
+        """Web address of a folder, for the phone (opens in the SharePoint app or the browser)."""
+        return self.file.origin + quote(path)
+
+    def list_photos(self) -> dict:
+        """New phone photos in the folder (the folder is created when it does not exist yet)."""
+        def run():
+            self._open_page()
+            path = self.photo_folder_path()
+            res = self._async(PHOTOS_JS, self.file.site, path, True, timeout=60)
+            if not isinstance(res, dict) or not res.get("ok"):
+                self.log(f"사진 폴더 확인 실패: {res}")
+                status = res.get("status") if isinstance(res, dict) else None
+                code, msg = explain(status, "사진 폴더")
+                if status == 404:
+                    msg = "SharePoint 사진 폴더를 찾지 못했습니다. config.json의 photo_folder를 확인하세요."
+                raise SharePointError(msg, status, code)
+            if res.get("created"):
+                self.report(f"SharePoint에 휴대폰 사진 폴더를 만들었습니다: {self.photo_folder}")
+            photos, skipped = [], 0
+            for f in sorted(res.get("files") or [], key=lambda f: f.get("created", "")):
+                name = str(f.get("name", ""))
+                if not name.lower().endswith(PHOTO_EXTS):
+                    continue
+                if int(f.get("size") or 0) > MAX_PHOTO_BYTES or len(photos) >= MAX_PHOTOS:
+                    skipped += 1
+                    continue
+                self.photos[f["id"]] = f
+                photos.append(f)
+            if photos:
+                self.report(f"휴대폰 사진 폴더에 새 사진 {len(photos)}장")
+            return {"ok": True, "folder": path, "link": self.folder_link(path), "name": self.photo_folder,
+                    "created": bool(res.get("created")), "photos": photos, "skipped": skipped}
+        return self._again_if_window_closed("사진 폴더 확인", run)
+
+    def fetch_photo(self, uid: str) -> tuple[bytes, dict]:
+        uid = (uid or "").strip().strip("{}").lower()
+        meta = self.photos.get(uid)
+        if meta is None:
+            raise SharePointError("목록에 없는 사진입니다. 휴대폰 사진을 다시 확인해 주세요.", code="missing")
+
+        def run():
+            self._open_page()
+            url = f"{self.file.site}/_layouts/15/download.aspx?UniqueId={uid}"
+            return self._fetch(url, f"사진 받는 중 {meta.get('name', '')}", photo=True), meta
+        return self._again_if_window_closed("사진 받기", run)
+
+    def _archive_photos(self, ids) -> dict:
+        """Move applied phone photos into the done folder (after a successful upload). Failures are reported, not raised."""
+        items = []
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        for uid in dict.fromkeys(str(i).strip().lower() for i in ids or []):
+            meta = self.photos.get(uid)
+            if not meta:
+                continue
+            folder, name = str(meta["url"]).rsplit("/", 1)
+            items.append({"id": uid, "from": meta["url"], "to": f"{folder}/{DONE_FOLDER}/{name}",
+                          "alt": f"{folder}/{DONE_FOLDER}/{stamp}_{name}"})
+        if not items:
+            return {"moved": 0, "failed": 0}
+        done_folder = items[0]["to"].rsplit("/", 1)[0]
+        try:
+            res = self._async(MOVE_JS, self.file.site, self.file.origin, done_folder, items, timeout=120)
+        except Exception as exc:
+            if window_closed(exc):
+                raise
+            self.log(f"사진 옮기기 예외: {type(exc).__name__}: {str(exc)[:200]}")
+            return {"moved": 0, "failed": len(items), "error": "사진을 '처리됨' 폴더로 옮기지 못했습니다."}
+        results = (res or {}).get("results") or []
+        moved = [r["id"] for r in results if r.get("ok")]
+        for uid in moved:
+            self.photos.pop(uid, None)
+        failed = len(items) - len(moved)
+        if failed or not (res or {}).get("ok"):
+            self.log(f"사진 옮기기 일부 실패: {res}")
+        if moved:
+            self.report(f"반영한 휴대폰 사진 {len(moved)}장을 '{DONE_FOLDER}' 폴더로 옮겼습니다.")
+        out = {"moved": len(moved), "failed": failed}
+        if failed:
+            out["error"] = f"사진 {failed}장을 '{DONE_FOLDER}' 폴더로 옮기지 못했습니다. 다음에 다시 나올 수 있습니다."
+        return out
+
+    def upload(self, data: bytes, done_photos=()) -> dict:
         """Replace the SharePoint file with `data` if it has not changed since our download."""
         if not data.startswith(b"PK"):
             raise SharePointError("올릴 내용이 엑셀 파일이 아닙니다.")
         if not self.etag:
             raise SharePointError("먼저 'SharePoint에서 최신 파일 받기'로 받은 파일에 반영한 뒤 올려 주세요.", code="no_base")
-        return self._again_if_window_closed("올리기", lambda: self._upload(data))
+        return self._again_if_window_closed("올리기", lambda: self._upload(data, done_photos))
 
-    def _upload(self, data: bytes) -> dict:
+    def _upload(self, data: bytes, done_photos=()) -> dict:
         self._open_page()
         current = self._file_info()
         if current.get("ETag") != self.etag:
@@ -620,9 +806,16 @@ class SharePoint:
         self.info = after
         sheets = sheet_names(stored) if stored.startswith(b"PK") else []
         self.log(f"올리기 성공: ETag {self.etag}, 시트 {sheets}")
+        photos = {"moved": 0, "failed": 0}
+        try:
+            photos = self._archive_photos(done_photos)
+        except Exception as exc:  # the upload already succeeded
+            self.log(f"사진 옮기기 실패(올리기는 성공): {type(exc).__name__}: {str(exc)[:160]}")
+            photos = {"moved": 0, "failed": len(done_photos), "error": "사진을 '처리됨' 폴더로 옮기지 못했습니다."}
         opened = self._show_workbook()
         return {"ok": True, "name": after.get("Name", "") or self.file.name, "etag": self.etag,
-                "modified": after.get("TimeLastModified", ""), "sheets": sheets, "size": len(stored), "opened": opened}
+                "modified": after.get("TimeLastModified", ""), "sheets": sheets, "size": len(stored), "opened": opened,
+                "photos": photos}
 
     def _show_workbook(self) -> bool:
         """After an upload, show the file in Excel for the web so the user can check it right away (2026-11-02 request).

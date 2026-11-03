@@ -152,7 +152,8 @@
     state.busy = true;
     state.result = null;
     showTab("update");
-    const newJobs = files.map((file) => ({ id: Math.random().toString(36).slice(2), file, fileName: file.name || "photo.jpg", status: "pending", messages: [] }));
+    const newJobs = files.map((file) => ({ id: Math.random().toString(36).slice(2), file, fileName: file.name || "photo.jpg", status: "pending", messages: [],
+      sp: file.tcPhone || null })); // sp: a phone photo from the SharePoint folder (moved to '처리됨' once uploaded)
     state.jobs.push(...newJobs);
     renderJobs();
     let n = 0;
@@ -239,7 +240,8 @@
   function renderJob(job) {
     const st = STATUS[job.status] || STATUS.pending;
     const head = h("div", { class: "job-head" },
-      h("span", { class: "job-file" }, job.fileName),
+      h("span", { class: "job-file" }, job.fileName,
+        job.sp ? h("span", { class: "job-from" }, `휴대폰 사진${job.sp.author ? ` · ${job.sp.author}` : ""}`) : null),
       h("span", { class: `pill ${st.cls}` }, st.text));
     if (job.status === "pending") {
       return h("article", { class: "job pending" }, head, h("div", { class: "job-wait" }, h("span", { class: "spinner", "aria-hidden": "true" }), "사진을 분석하고 있습니다"));
@@ -500,6 +502,107 @@
     setInterval(refreshProgramLog, 1500);
   }
 
+  // ------------------------------------------------------------ phone photos (desktop only)
+  // Engineers upload photos to a SharePoint folder with the phone app; they are taken in here.
+  const phone = { link: "", name: "", checking: false };
+
+  function phoneStatus(text, bad) {
+    const el = $("#phone-status");
+    el.textContent = text;
+    el.classList.toggle("bad", !!bad);
+  }
+
+  /** Photos already in the list, or applied and waiting for the upload: not taken in twice. */
+  function knownPhoneIds() {
+    const ids = new Set(state.jobs.map((j) => j.sp && j.sp.id));
+    const r = state.result;
+    if (r && !(r.upload && r.upload.done)) for (const j of [...r.changes.map((c) => c.job), ...(r.missing || [])]) ids.add(j.sp && j.sp.id);
+    ids.delete(null);
+    ids.delete(undefined);
+    return ids;
+  }
+
+  async function checkPhonePhotos() {
+    if (!desktop.sharepoint || phone.checking) return;
+    phone.checking = true;
+    const btn = $("#phone-check");
+    btn.disabled = true;
+    phoneStatus("휴대폰 사진 폴더 확인 중…");
+    try {
+      const r = await apiJson("/api/sp/photos");
+      if (!r.ok) return phoneStatus(r.message || "휴대폰 사진 폴더를 확인하지 못했습니다.", true);
+      phone.link = r.link || "";
+      phone.name = r.name || "";
+      renderPhonePanel();
+      const known = knownPhoneIds();
+      const fresh = (r.photos || []).filter((p) => !known.has(p.id));
+      if (!fresh.length) {
+        return phoneStatus(r.created
+          ? `SharePoint에 '${phone.name}' 폴더를 만들었습니다. 엔지니어들이 휴대폰으로 사진을 올리면 여기로 가져옵니다.`
+          : `'${phone.name}' 폴더에 새 사진이 없습니다.`);
+      }
+      const files = [];
+      let failed = 0;
+      for (const [i, p] of fresh.entries()) {
+        phoneStatus(`휴대폰 사진 받는 중… ${i + 1}/${fresh.length}`);
+        const res = await api(`/api/sp/photo?id=${encodeURIComponent(p.id)}`).catch(() => null);
+        if (!res || !res.ok) {
+          failed++;
+          continue;
+        }
+        const blob = await res.blob();
+        const file = new File([blob], p.name, { type: blob.type || "image/jpeg", lastModified: Date.parse(p.created) || Date.now() });
+        file.tcPhone = { id: p.id, author: p.author || "", created: p.created || "" };
+        files.push(file);
+      }
+      phoneStatus(`휴대폰 사진 ${files.length}장을 가져왔습니다${failed ? ` (${failed}장은 받지 못함)` : ""}.`, failed > 0);
+      if (!files.length) return;
+      toast(`휴대폰으로 올린 사진 ${files.length}장을 가져왔습니다. 확인 후 반영하세요.`, "good");
+      while (state.busy) await new Promise((res) => setTimeout(res, 500)); // photos being read now: wait for them
+      await processFiles(files);
+    } catch (e) {
+      phoneStatus(`휴대폰 사진을 가져오지 못했습니다: ${e.message}`, true);
+    } finally {
+      phone.checking = false;
+      btn.disabled = false;
+    }
+  }
+
+  function renderPhonePanel() {
+    let shown = phone.link;
+    try { shown = decodeURI(phone.link); } catch (e) { /* keep as is */ }
+    $("#phone-link").textContent = shown; // readable; the QR and '링크 복사' use the encoded address
+    const canvas = $("#phone-qr");
+    if (!phone.link || typeof qrcode !== "function") return;
+    const qr = qrcode(0, "M");
+    qr.addData(phone.link);
+    qr.make();
+    const n = qr.getModuleCount(), quiet = 2, size = canvas.width, cell = size / (n + quiet * 2);
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, size, size);
+    ctx.fillStyle = "#000";
+    for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) {
+      if (qr.isDark(r, c)) ctx.fillRect(Math.floor((c + quiet) * cell), Math.floor((r + quiet) * cell), Math.ceil(cell), Math.ceil(cell));
+    }
+  }
+
+  function togglePhonePanel(show) {
+    const panel = $("#phone-panel");
+    panel.hidden = show === undefined ? !panel.hidden : !show;
+    $("#phone-howto").setAttribute("aria-expanded", String(!panel.hidden));
+    if (!panel.hidden && !phone.link) $("#phone-link").textContent = "폴더 주소를 확인하는 중입니다. 잠시 후 다시 열어 주세요.";
+  }
+
+  async function copyPhoneLink() {
+    try {
+      await navigator.clipboard.writeText(phone.link);
+      toast("폴더 링크를 복사했습니다. 메신저나 메일로 엔지니어들에게 보내세요.", "good");
+    } catch (e) {
+      toast("복사하지 못했습니다. 링크를 직접 선택해서 복사하세요.", "bad");
+    }
+  }
+
   // ------------------------------------------------------------ SharePoint (desktop only)
   /** Show the exe's latest status line (e.g. "SharePoint에서 받는 중… 45.2 / 207.8 MB") while `promise` runs. */
   function followProgress(promise, show) {
@@ -576,7 +679,9 @@
     if (!result) return;
     result.upload = { busy: true, message: `SharePoint에 올리는 중… (${(result.blob.size / 1e6).toFixed(0)} MB)` };
     renderResult();
-    const r = await followProgress(apiJson("/api/sp/upload", { method: "POST", body: result.blob }), (m) => {
+    const done = [...new Set(result.changes.map((c) => c.job.sp && c.job.sp.id).filter(Boolean))];
+    const url = "/api/sp/upload" + (done.length ? `?done=${done.map(encodeURIComponent).join(",")}` : "");
+    const r = await followProgress(apiJson(url, { method: "POST", body: result.blob }), (m) => {
       if (result.upload && result.upload.busy && /올리는 중|확인 중/.test(m)) {
         result.upload.message = m;
         const el = document.getElementById("sp-progress");
@@ -615,6 +720,8 @@
         up.opened
           ? h("p", {}, "확인용으로 SharePoint 창에 방금 올린 파일을 열었습니다(보기 모드). 확인한 뒤 그 창은 닫아도 됩니다.")
           : null,
+        up.photos && up.photos.moved ? h("p", {}, `반영한 휴대폰 사진 ${up.photos.moved}장을 '처리됨' 폴더로 옮겼습니다.`) : null,
+        up.photos && up.photos.error ? h("p", { class: "sp-error" }, up.photos.error) : null,
         h("p", { class: "muted small" }, "이전 버전은 SharePoint의 '버전 기록'에서 되돌릴 수 있습니다."));
     }
     if (up.busy) {
@@ -865,10 +972,16 @@
         if (!desktop.sharepoint) return;
         $("#sp-row").hidden = false;
         $("#sp-name").textContent = desktop.name ? `SharePoint: ${desktop.name}` : "SharePoint 파일";
+        $("#phone-row").hidden = false;
         renderActions();
-        downloadFromSharePoint(); // start right away: the user only has to add photos
+        // start right away: the user only has to add photos (or they come from the phones)
+        downloadFromSharePoint().then((ok) => ok && checkPhonePhotos());
       });
-      $("#sp-download").addEventListener("click", downloadFromSharePoint);
+      $("#sp-download").addEventListener("click", () => downloadFromSharePoint().then((ok) => ok && checkPhonePhotos()));
+      $("#phone-check").addEventListener("click", checkPhonePhotos);
+      $("#phone-howto").addEventListener("click", () => togglePhonePanel());
+      $("#phone-close").addEventListener("click", () => togglePhonePanel(false));
+      $("#phone-copy").addEventListener("click", copyPhoneLink);
     }
     // warm up the OCR engine in the background so the first photo is quicker
     setTimeout(async () => {
